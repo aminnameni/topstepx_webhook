@@ -6,7 +6,7 @@ import requests
 app = Flask(__name__)
 
 # ⚙️ اطلاعات شما
-USERNAME = "amin.nameni@ymail.com"
+USERNAME = "aminnameni"
 API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="
 
 # 🔐 مرحله اول: ورود به سیستم
