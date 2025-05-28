@@ -58,9 +58,12 @@ def check_token_and_account():
 
         return f"✅ توکن معتبر است!\n🧾 Account ID: {account_id}\n📘 Account #: {account_number}"
 
-    except Exception as e:
-        print("❗️ خطا:", str(e))
-        return "⚠️ خطای سرور"
+except Exception as e:
+    import traceback
+    err = traceback.format_exc()
+    print("❗️ خطای کامل:\n", err)
+    return f"<pre>⚠️ خطای سرور:\n\n{err}</pre>"
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
