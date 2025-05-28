@@ -84,7 +84,6 @@ def webhook():
         if not cached_token or not cached_account_id:
             return "❌ توکن یا حساب تنظیم نشده. لطفاً مسیر اصلی را صدا بزنید.", 403
 
-        # مثال: فقط MNQ رو به کانترکت ID مناسب تبدیل کن
         contract_map = {
             "MNQ": "CON.F.US.NQ3.M25",
             "MGC": "CON.F.US.GC.M25"
@@ -96,7 +95,7 @@ def webhook():
         order_payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
-            "type": 2,  # Market order
+            "type": 2,
             "side": 1 if side.lower() == "buy" else 2,
             "size": qty,
             "limitPrice": None,
@@ -116,8 +115,7 @@ def webhook():
             return f"❌ خطا در سفارش: {order_data.get('errorMessage')}"
 
     except Exception as e:
-        return f"⚠️ خطای پردازش سفارش:
-{e}", 500
+        return f"⚠️ خطای پردازش سفارش:\n{e}", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
