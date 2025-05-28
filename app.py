@@ -1,108 +1,67 @@
-from flask import Flask, request
-import os
-import json
+from flask import Flask
 import requests
+import os
 
 app = Flask(__name__)
 
-# ⚙️ اطلاعات شما
-USERNAME = "aminnameni"
-API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="
+# === مقدارهای احراز هویت
+USERNAME = "your@email.com"  # ← ایمیل TopStepX شما
+API_KEY = "your_projectx_token_here"  # ← ProjectX API key
 
-# 🔐 مرحله اول: ورود به سیستم
-def get_auth_token():
-    login_url = "https://api.topstepx.com/api/Auth/loginKey"
-    payload = {
-        "userName": USERNAME,
-        "apiKey": API_KEY
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "text/plain"
-    }
-    response = requests.post(login_url, json=payload, headers=headers)
-    result = response.json()
-    return result.get("token") if result.get("success") else None
+# === آدرس‌ها
+LOGIN_URL = "https://api.topstepx.com/api/Auth/loginKey"
+VALIDATE_URL = "https://api.topstepx.com/api/Auth/validate"
+ACCOUNT_URL = "https://api.topstepx.com/api/Account/search"
 
-# 📒 گرفتن AccountId
-def get_account_id(token):
-    url = "https://api.topstepx.com/api/Account/search"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    response = requests.post(url, json={}, headers=headers)
-    accounts = response.json()
-    if isinstance(accounts, list) and accounts:
-        return accounts[0]["accountId"]  # اولین حساب فعال
-    return None
+@app.route("/")
+def check_token_and_account():
+    try:
+        # === مرحله 1: ورود و گرفتن توکن
+        login_resp = requests.post(LOGIN_URL, json={
+            "userName": USERNAME,
+            "apiKey": API_KEY
+        })
+        login_data = login_resp.json()
+        print("🟢 پاسخ ورود:", login_data)
 
-# 🔀 نگاشت ساده symbol به contractId (فعلاً دستی)
-symbol_to_contract = {
-    "MNQ": "CON.F.US.NQ.M25",
-    "MGC": "CON.F.US.GC.M25",
-    "MYM": "CON.F.US.DJ.M25",
-    "MCL": "CON.F.US.CL.M25"
-}
+        if not login_data.get("success"):
+            return "❌ ورود ناموفق! ایمیل یا API Key اشتباه است"
 
-# 🟢 روت اصلی
-@app.route('/')
-def home():
-    return "✅ TopStepX Webhook Server is Live!"
+        token = login_data.get("token")
 
-# 📥 روت وبهوک
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-    print("📥 Webhook received:\n", json.dumps(data, indent=2))
+        # === مرحله 2: بررسی اعتبار توکن
+        validate_resp = requests.post(VALIDATE_URL, json={
+            "token": token
+        })
+        validate_data = validate_resp.json()
+        print("🟢 پاسخ اعتبارسنجی:", validate_data)
 
-    symbol = data.get("symbol")
-    side_text = data.get("side")
-    qty = data.get("qty")
+        if not validate_data.get("success"):
+            return "❌ توکن نامعتبر است!"
 
-    # نگاشت side از متن به عدد
-    side = 1 if side_text.lower() == "buy" else 2
+        # === مرحله 3: دریافت accountId
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
 
-    contract_id = symbol_to_contract.get(symbol.upper())
-    if not contract_id:
-        return f"❌ Unknown symbol: {symbol}", 400
+        account_resp = requests.post(ACCOUNT_URL, json={}, headers=headers)
+        account_data = account_resp.json()
+        print("🟢 حساب‌های فعال:", account_data)
 
-    # گرفتن توکن
-    token = get_auth_token()
-    if not token:
-        return "❌ Failed to get auth token", 401
+        if not account_data or len(account_data) == 0:
+            return "⚠️ هیچ حساب فعالی پیدا نشد."
 
-    # گرفتن اکانت آیدی
-    account_id = get_account_id(token)
-    if not account_id:
-        return "❌ No account found", 404
+        # گرفتن اولین accountId
+        account_id = account_data[0].get("accountId")
+        account_number = account_data[0].get("accountNumber")
 
-    # سفارش بازار
-    order_payload = {
-        "accountId": account_id,
-        "contractId": contract_id,
-        "type": 2,
-        "side": side,
-        "size": qty,
-        "limitPrice": None,
-        "stopPrice": None,
-        "trailPrice": None,
-        "customTag": None,
-        "linkedOrderId": None
-    }
+        return f"✅ توکن معتبر است!\n🧾 Account ID: {account_id}\n📘 Account #: {account_number}"
 
-    order_url = "https://api.topstepx.com/api/Order/place"
-    order_headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+    except Exception as e:
+        print("❗️ خطا:", str(e))
+        return "⚠️ خطای سرور"
 
-    order_response = requests.post(order_url, json=order_payload, headers=order_headers)
-    print("📤 Order response:", order_response.status_code, order_response.text)
-    return "✅ Order sent", 200
-
-# اجرای سرور
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
