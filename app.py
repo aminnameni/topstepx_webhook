@@ -50,6 +50,8 @@ def check_token_and_account():
 
         accounts = acc_data.get("accounts", [])
         print("🔍 نام حساب‌ها:", [acc.get("name") for acc in accounts])
+        for acc in accounts:
+            print(f"🔎 بررسی: '{acc.get('name')}' ← ID: {acc.get('id')} / canTrade: {acc.get('canTrade')}")
 
         TARGET_ACCOUNT_NAME = "S1MAY2814229370"
         target_account = next((acc for acc in accounts if acc.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()), None)
