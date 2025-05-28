@@ -49,7 +49,9 @@ def check_token_and_account():
         print("🧾 لیست حساب‌ها:", acc_data)
 
         accounts = acc_data.get("accounts", [])
-        target_account = next((acc for acc in accounts if acc.get("name") == "S1MAY2814229370"), None)
+        print("🔍 نام حساب‌ها:", [acc.get("name") for acc in accounts])
+
+        target_account = next((acc for acc in accounts if "s1may2814229370" in acc.get("name", "").lower()), None)
 
         if not target_account:
             return "⚠️ حساب مورد نظر یافت نشد."
