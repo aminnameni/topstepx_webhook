@@ -1,73 +1,100 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import requests
 
 app = Flask(__name__)
 
-# اطلاعات ورود (جایگزین کن با اطلاعات واقعی خودت)
+# اطلاعات ورود ثابت
 USERNAME = "aminnameni"
 API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="
+ACCOUNT_ID = 8167809  # حساب قابل معامله
 
 # آدرس‌های API
-BASE_URL = "https://api.topstepx.com"
-LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
-VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
-ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
+LOGIN_URL = "https://api.topstepx.com/api/Auth/loginKey"
+VALIDATE_URL = "https://api.topstepx.com/api/Auth/validate"
+ORDER_URL = "https://api.topstepx.com/api/Order/place"
 
-@app.route("/", methods=["GET"])
-def check_token_and_account():
+# متغیر توکن
+session_token = None
+
+# === توابع ===
+
+def login_and_validate():
+    global session_token
+
+    login_payload = {"userName": USERNAME, "apiKey": API_KEY}
     try:
-        # ورود با کلید API
-        login_payload = {
-            "userName": USERNAME,
-            "apiKey": API_KEY
-        }
         login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
         print("🟢 پاسخ ورود:", login_data)
 
-        if not login_data.get("success"):
-            return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
+        if login_data["success"]:
+            token = login_data["token"]
+            # اعتبارسنجی
+            validate_headers = {"Authorization": f"Bearer {token}"}
+            validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
+            validate_data = validate_resp.json()
+            print("🟢 اعتبارسنجی:", validate_data)
 
-        token = login_data["token"]
+            if validate_data["success"]:
+                session_token = validate_data["newToken"]
+                return True
+        return False
+    except Exception as e:
+        print("❗️ خطا در ورود:", e)
+        return False
 
-        # اعتبارسنجی توکن
-        validate_headers = {"Authorization": f"Bearer {token}"}
-        validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
-        validate_data = validate_resp.json()
-        print("🟢 اعتبارسنجی:", validate_data)
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ سرور Flask برای TopstepX آماده است."
 
-        if not validate_data.get("success"):
-            return "❌ توکن نامعتبر است."
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    global session_token
 
-        new_token = validate_data["newToken"]
+    if session_token is None:
+        print("🔁 تلاش برای دریافت توکن...")
+        if not login_and_validate():
+            return "❌ ورود یا اعتبارسنجی شکست خورد.", 401
 
-        # دریافت لیست حساب‌ها
-        account_headers = {"Authorization": f"Bearer {new_token}"}
-        account_resp = requests.post(ACCOUNT_URL, headers=account_headers)
-        acc_data = account_resp.json()
-        print("🧾 لیست حساب‌ها:", acc_data)
+    data = request.json
+    print("📥 Webhook Received:", data)
 
-        accounts = acc_data.get("accounts", [])
-        if not accounts:
-            return "⚠️ هیچ حسابی یافت نشد."
+    try:
+        contract_id = data["symbol"]  # مثال: CON.F.US.MNQ.M25
+        side = 1 if data["side"].lower() == "buy" else 2
+        qty = int(data["qty"])
 
-        # فقط حساب‌هایی که میشه باهاش ترید کرد
-        tradable_accounts = [acc for acc in accounts if acc.get("canTrade")]
+        order_payload = {
+            "accountId": ACCOUNT_ID,
+            "contractId": contract_id,
+            "type": 2,          # Market Order
+            "side": side,
+            "size": qty,
+            "limitPrice": None,
+            "stopPrice": None,
+            "trailPrice": None,
+            "customTag": "WebhookOrder",
+            "linkedOrderId": None
+        }
 
-        if not tradable_accounts:
-            return "⚠️ هیچ حساب قابل تریدی یافت نشد."
+        order_headers = {
+            "Authorization": f"Bearer {session_token}",
+            "Content-Type": "application/json"
+        }
 
-        account_id = tradable_accounts[0]["id"]
-        account_name = tradable_accounts[0]["name"]
+        order_resp = requests.post(ORDER_URL, headers=order_headers, json=order_payload)
+        order_data = order_resp.json()
+        print("📤 پاسخ سفارش:", order_data)
 
-        return f"""
-✅ توکن معتبر است!
-🧾 Account ID: {account_id}
-📘 Account Name: {account_name}
-"""
+        if order_data.get("success"):
+            return jsonify({"status": "✅ سفارش ارسال شد", "orderId": order_data.get("orderId")}), 200
+        else:
+            return jsonify({"status": "❌ سفارش ناموفق", "error": order_data.get("errorMessage")}), 400
 
     except Exception as e:
-        return f"⚠️ خطای سرور:\n{e}"
+        print("❗️ خطا در ارسال سفارش:", e)
+        return "❌ خطای داخلی سرور", 500
 
+# اجرای محلی فقط برای تست
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=False, host="0.0.0.0", port=10000)
