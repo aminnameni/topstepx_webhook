@@ -1,69 +1,73 @@
-from flask import Flask
+from flask import Flask, request
 import requests
-import os
 
 app = Flask(__name__)
 
-# 🔒 اطلاعات کاربری خودت رو اینجا وارد کن:
-USERNAME = "aminnameni"       # ← نام کاربری شما در TopStepX (ایمیل یا نام‌کاربری متنی)
-API_KEY  = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="    # ← توکن گرفته‌شده از ProjectX
+# اطلاعات ورود (جایگزین کن با اطلاعات واقعی خودت)
+USERNAME = "aminnameni"
+API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="
 
-# 🔗 آدرس‌های API
-LOGIN_URL    = "https://api.topstepx.com/api/Auth/loginKey"
-VALIDATE_URL = "https://api.topstepx.com/api/Auth/validate"
-ACCOUNT_URL  = "https://api.topstepx.com/api/Account/search"
+# آدرس‌های API
+BASE_URL = "https://api.topstepx.com"
+LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
+VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
+ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def check_token_and_account():
     try:
-        # === مرحله 1: گرفتن توکن ورود
-        login_resp = requests.post(LOGIN_URL, json={
+        # ورود با کلید API
+        login_payload = {
             "userName": USERNAME,
             "apiKey": API_KEY
-        })
+        }
+        login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
         print("🟢 پاسخ ورود:", login_data)
 
         if not login_data.get("success"):
-            return "❌ ورود ناموفق! لطفاً USERNAME یا API_KEY را بررسی کن."
+            return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
 
-        token = login_data.get("token")
+        token = login_data["token"]
 
-        # === مرحله 2: اعتبارسنجی توکن با هدر مناسب
-        validate_headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
+        # اعتبارسنجی توکن
+        validate_headers = {"Authorization": f"Bearer {token}"}
         validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
         validate_data = validate_resp.json()
         print("🟢 اعتبارسنجی:", validate_data)
 
         if not validate_data.get("success"):
-            return "❌ توکن نامعتبر است!"
+            return "❌ توکن نامعتبر است."
 
-        # === مرحله 3: گرفتن اطلاعات حساب
-        acc_resp = requests.post(ACCOUNT_URL, json={}, headers=validate_headers)
-        acc_data = acc_resp.json()
+        new_token = validate_data["newToken"]
+
+        # دریافت لیست حساب‌ها
+        account_headers = {"Authorization": f"Bearer {new_token}"}
+        account_resp = requests.post(ACCOUNT_URL, headers=account_headers)
+        acc_data = account_resp.json()
         print("🧾 لیست حساب‌ها:", acc_data)
 
-        if not acc_data or len(acc_data) == 0:
-            return "⚠️ حساب فعالی یافت نشد."
+        accounts = acc_data.get("accounts", [])
+        if not accounts:
+            return "⚠️ هیچ حسابی یافت نشد."
 
-        account_id = acc_data[0].get("accountId")
-        account_number = acc_data[0].get("accountNumber")
+        # فقط حساب‌هایی که میشه باهاش ترید کرد
+        tradable_accounts = [acc for acc in accounts if acc.get("canTrade")]
+
+        if not tradable_accounts:
+            return "⚠️ هیچ حساب قابل تریدی یافت نشد."
+
+        account_id = tradable_accounts[0]["id"]
+        account_name = tradable_accounts[0]["name"]
 
         return f"""
 ✅ توکن معتبر است!
 🧾 Account ID: {account_id}
-📘 Account Number: {account_number}
+📘 Account Name: {account_name}
 """
 
     except Exception as e:
-        import traceback
-        err = traceback.format_exc()
-        print("❗️ خطای کامل:\n", err)
-        return f"<pre>⚠️ خطای سرور:\n\n{err}</pre>"
+        return f"⚠️ خطای سرور:\n{e}"
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
