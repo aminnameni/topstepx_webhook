@@ -49,18 +49,17 @@ def check_token_and_account():
         print("🧾 لیست حساب‌ها:", acc_data)
 
         accounts = acc_data.get("accounts", [])
-        tradable_accounts = [acc for acc in accounts if acc.get("canTrade")]
+        target_account = next((acc for acc in accounts if acc.get("name") == "S1MAY2814229370"), None)
 
-        if not tradable_accounts:
-            return "⚠️ هیچ حساب قابل تریدی یافت نشد."
+        if not target_account:
+            return "⚠️ حساب مورد نظر یافت نشد."
 
-        account_id = tradable_accounts[0]["id"]
-        account_name = tradable_accounts[0]["name"]
-        cached_account_id = account_id
+        cached_account_id = target_account["id"]
+        account_name = target_account["name"]
 
         return f"""
 ✅ توکن معتبر است!
-🧾 Account ID: {account_id}
+🧾 Account ID: {cached_account_id}
 📘 Account Name: {account_name}
 """
 
