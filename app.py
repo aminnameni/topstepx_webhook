@@ -1,100 +1,123 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request
 import requests
 
 app = Flask(__name__)
 
-# اطلاعات ورود ثابت
+# اطلاعات ورود
 USERNAME = "aminnameni"
 API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="
-ACCOUNT_ID = 8167809  # حساب قابل معامله
 
 # آدرس‌های API
-LOGIN_URL = "https://api.topstepx.com/api/Auth/loginKey"
-VALIDATE_URL = "https://api.topstepx.com/api/Auth/validate"
-ORDER_URL = "https://api.topstepx.com/api/Order/place"
+BASE_URL = "https://api.topstepx.com"
+LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
+VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
+ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
+ORDER_URL = f"{BASE_URL}/api/Order/place"
 
-# متغیر توکن
-session_token = None
+# ذخیره توکن و accountId برای استفاده در سفارش‌ها
+cached_token = None
+cached_account_id = None
 
-# === توابع ===
-
-def login_and_validate():
-    global session_token
-
-    login_payload = {"userName": USERNAME, "apiKey": API_KEY}
+@app.route("/", methods=["GET"])
+def check_token_and_account():
+    global cached_token, cached_account_id
     try:
+        login_payload = {"userName": USERNAME, "apiKey": API_KEY}
         login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
         print("🟢 پاسخ ورود:", login_data)
 
-        if login_data["success"]:
-            token = login_data["token"]
-            # اعتبارسنجی
-            validate_headers = {"Authorization": f"Bearer {token}"}
-            validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
-            validate_data = validate_resp.json()
-            print("🟢 اعتبارسنجی:", validate_data)
+        if not login_data.get("success"):
+            return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
 
-            if validate_data["success"]:
-                session_token = validate_data["newToken"]
-                return True
-        return False
+        token = login_data["token"]
+
+        validate_headers = {"Authorization": f"Bearer {token}"}
+        validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
+        validate_data = validate_resp.json()
+        print("🟢 اعتبارسنجی:", validate_data)
+
+        if not validate_data.get("success"):
+            return "❌ توکن نامعتبر است."
+
+        new_token = validate_data["newToken"]
+        cached_token = new_token
+
+        account_headers = {"Authorization": f"Bearer {new_token}"}
+        account_resp = requests.post(ACCOUNT_URL, headers=account_headers)
+        acc_data = account_resp.json()
+        print("🧾 لیست حساب‌ها:", acc_data)
+
+        accounts = acc_data.get("accounts", [])
+        tradable_accounts = [acc for acc in accounts if acc.get("canTrade")]
+
+        if not tradable_accounts:
+            return "⚠️ هیچ حساب قابل تریدی یافت نشد."
+
+        account_id = tradable_accounts[0]["id"]
+        account_name = tradable_accounts[0]["name"]
+        cached_account_id = account_id
+
+        return f"""
+✅ توکن معتبر است!
+🧾 Account ID: {account_id}
+📘 Account Name: {account_name}
+"""
+
     except Exception as e:
-        print("❗️ خطا در ورود:", e)
-        return False
-
-@app.route("/", methods=["GET"])
-def home():
-    return "✅ سرور Flask برای TopstepX آماده است."
+        return f"⚠️ خطای سرور:\n{e}"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    global session_token
-
-    if session_token is None:
-        print("🔁 تلاش برای دریافت توکن...")
-        if not login_and_validate():
-            return "❌ ورود یا اعتبارسنجی شکست خورد.", 401
-
-    data = request.json
-    print("📥 Webhook Received:", data)
-
+    global cached_token, cached_account_id
     try:
-        contract_id = data["symbol"]  # مثال: CON.F.US.MNQ.M25
-        side = 1 if data["side"].lower() == "buy" else 2
-        qty = int(data["qty"])
+        data = request.get_json()
+        print("📥 Webhook Received:", data)
+
+        symbol = data.get("symbol")
+        side = data.get("side")
+        qty = data.get("qty")
+
+        if not all([symbol, side, qty]):
+            return "❌ داده‌های ناقص دریافت شد.", 400
+
+        if not cached_token or not cached_account_id:
+            return "❌ توکن یا حساب تنظیم نشده. لطفاً مسیر اصلی را صدا بزنید.", 403
+
+        # مثال: فقط MNQ رو به کانترکت ID مناسب تبدیل کن
+        contract_map = {
+            "MNQ": "CON.F.US.NQ3.M25",
+            "MGC": "CON.F.US.GC.M25"
+        }
+        contract_id = contract_map.get(symbol.upper())
+        if not contract_id:
+            return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
         order_payload = {
-            "accountId": ACCOUNT_ID,
+            "accountId": cached_account_id,
             "contractId": contract_id,
-            "type": 2,          # Market Order
-            "side": side,
+            "type": 2,  # Market order
+            "side": 1 if side.lower() == "buy" else 2,
             "size": qty,
             "limitPrice": None,
             "stopPrice": None,
             "trailPrice": None,
-            "customTag": "WebhookOrder",
+            "customTag": None,
             "linkedOrderId": None
         }
-
-        order_headers = {
-            "Authorization": f"Bearer {session_token}",
-            "Content-Type": "application/json"
-        }
-
-        order_resp = requests.post(ORDER_URL, headers=order_headers, json=order_payload)
+        headers = {"Authorization": f"Bearer {cached_token}"}
+        order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
         order_data = order_resp.json()
-        print("📤 پاسخ سفارش:", order_data)
 
+        print("📤 پاسخ سفارش:", order_data)
         if order_data.get("success"):
-            return jsonify({"status": "✅ سفارش ارسال شد", "orderId": order_data.get("orderId")}), 200
+            return f"✅ سفارش ارسال شد! Order ID: {order_data.get('orderId')}"
         else:
-            return jsonify({"status": "❌ سفارش ناموفق", "error": order_data.get("errorMessage")}), 400
+            return f"❌ خطا در سفارش: {order_data.get('errorMessage')}"
 
     except Exception as e:
-        print("❗️ خطا در ارسال سفارش:", e)
-        return "❌ خطای داخلی سرور", 500
+        return f"⚠️ خطای پردازش سفارش:
+{e}", 500
 
-# اجرای محلی فقط برای تست
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000)
