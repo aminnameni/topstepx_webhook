@@ -5,8 +5,8 @@ import os
 app = Flask(__name__)
 
 # === مقدارهای احراز هویت
-USERNAME = "your@email.com"  # ← ایمیل TopStepX شما
-API_KEY = "your_projectx_token_here"  # ← ProjectX API key
+USERNAME = "aminnameni"  # ← ایمیل TopStepX شما
+API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="  # ← ProjectX API key
 
 # === آدرس‌ها
 LOGIN_URL = "https://api.topstepx.com/api/Auth/loginKey"
