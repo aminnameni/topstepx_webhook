@@ -28,7 +28,12 @@ def check_token_and_account():
         token = login_data.get("token")
 
         # === بررسی اعتبار توکن
-        validate_resp = requests.post(VALIDATE_URL, json={"token": token})
+        validate_headers = {
+    "Authorization": f"Bearer {token}",
+    "Content-Type": "application/json"
+}
+validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
+
         validate_data = validate_resp.json()
         print("🟢 اعتبارسنجی:", validate_data)
 
