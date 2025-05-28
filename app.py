@@ -17,6 +17,7 @@ ORDER_URL = f"{BASE_URL}/api/Order/place"
 # ذخیره توکن و accountId برای استفاده در سفارش‌ها
 cached_token = None
 cached_account_id = None
+TARGET_ACCOUNT_NAME = "S1MAY2814229370"
 
 @app.route("/", methods=["GET"])
 def check_token_and_account():
@@ -31,7 +32,6 @@ def check_token_and_account():
             return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
 
         token = login_data["token"]
-
         validate_headers = {"Authorization": f"Bearer {token}"}
         validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
         validate_data = validate_resp.json()
@@ -53,7 +53,6 @@ def check_token_and_account():
         for acc in accounts:
             print(f"🔎 بررسی: '{acc.get('name')}' ← ID: {acc.get('id')} / canTrade: {acc.get('canTrade')}")
 
-        TARGET_ACCOUNT_NAME = "S1MAY2814229370"
         target_account = next((acc for acc in accounts if acc.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()), None)
 
         if not target_account:
