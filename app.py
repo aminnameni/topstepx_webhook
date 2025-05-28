@@ -4,17 +4,19 @@ import os
 
 app = Flask(__name__)
 
-USERNAME = "aminnameni"  # ← جایگزین کن
-API_KEY = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="  # ← جایگزین کن
+# 🔒 اطلاعات کاربری خودت رو اینجا وارد کن:
+USERNAME = "aminnameni"       # ← نام کاربری شما در TopStepX (ایمیل یا نام‌کاربری متنی)
+API_KEY  = "wSKjn1H8w/klZ8zIybGxSR3Xf8K2O+pQdy3S9Rsah8I="    # ← توکن گرفته‌شده از ProjectX
 
-LOGIN_URL = "https://api.topstepx.com/api/Auth/loginKey"
+# 🔗 آدرس‌های API
+LOGIN_URL    = "https://api.topstepx.com/api/Auth/loginKey"
 VALIDATE_URL = "https://api.topstepx.com/api/Auth/validate"
-ACCOUNT_URL = "https://api.topstepx.com/api/Account/search"
+ACCOUNT_URL  = "https://api.topstepx.com/api/Account/search"
 
 @app.route("/")
 def check_token_and_account():
     try:
-        # === ورود و گرفتن توکن
+        # === مرحله 1: گرفتن توکن ورود
         login_resp = requests.post(LOGIN_URL, json={
             "userName": USERNAME,
             "apiKey": API_KEY
@@ -23,39 +25,38 @@ def check_token_and_account():
         print("🟢 پاسخ ورود:", login_data)
 
         if not login_data.get("success"):
-            return "❌ ورود ناموفق! ایمیل یا API Key اشتباه است"
+            return "❌ ورود ناموفق! لطفاً USERNAME یا API_KEY را بررسی کن."
 
         token = login_data.get("token")
 
-        # === بررسی اعتبار توکن
+        # === مرحله 2: اعتبارسنجی توکن با هدر مناسب
         validate_headers = {
-    "Authorization": f"Bearer {token}",
-    "Content-Type": "application/json"
-}
-validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
-
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
         validate_data = validate_resp.json()
         print("🟢 اعتبارسنجی:", validate_data)
 
         if not validate_data.get("success"):
             return "❌ توکن نامعتبر است!"
 
-        # === گرفتن accountId
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        acc_resp = requests.post(ACCOUNT_URL, json={}, headers=headers)
+        # === مرحله 3: گرفتن اطلاعات حساب
+        acc_resp = requests.post(ACCOUNT_URL, json={}, headers=validate_headers)
         acc_data = acc_resp.json()
         print("🧾 لیست حساب‌ها:", acc_data)
 
         if not acc_data or len(acc_data) == 0:
-            return "⚠️ حسابی یافت نشد."
+            return "⚠️ حساب فعالی یافت نشد."
 
         account_id = acc_data[0].get("accountId")
         account_number = acc_data[0].get("accountNumber")
 
-        return f"✅ توکن معتبر است!\n\n🧾 Account ID: {account_id}\n📘 Account #: {account_number}"
+        return f"""
+✅ توکن معتبر است!
+🧾 Account ID: {account_id}
+📘 Account Number: {account_number}
+"""
 
     except Exception as e:
         import traceback
