@@ -64,7 +64,6 @@ except Exception as e:
     print("❗️ خطای کامل:\n", err)
     return f"<pre>⚠️ خطای سرور:\n\n{err}</pre>"
 
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
