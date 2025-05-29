@@ -1,8 +1,32 @@
+from flask import Flask, request
+import requests
+import os
+
+app = Flask(__name__)
+
+# اطلاعات از محیط
+USERNAME = os.getenv("TOPSTEP_USER")
+API_KEY = os.getenv("TOPSTEP_KEY")
+TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
+
+# آدرس‌های API
+BASE_URL = "https://api.topstepx.com"
+LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
+VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
+ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
+ORDER_URL = f"{BASE_URL}/api/Order/place"
+
+# کش توکن و شناسه حساب
+cached_token = None
+cached_account_id = None
+
+# مسیر بررسی و چاپ لیست حساب‌ها
 @app.route("/", methods=["GET"])
 def health_check():
     global cached_token, cached_account_id
 
     try:
+        # مرحله ورود
         login_payload = {"userName": USERNAME, "apiKey": API_KEY}
         login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
@@ -12,6 +36,7 @@ def health_check():
 
         token = login_data["token"]
 
+        # مرحله اعتبارسنجی
         validate_headers = {"Authorization": f"Bearer {token}"}
         validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
         validate_data = validate_resp.json()
@@ -21,6 +46,7 @@ def health_check():
 
         cached_token = validate_data["newToken"]
 
+        # مرحله گرفتن لیست حساب‌ها
         account_headers = {"Authorization": f"Bearer {cached_token}"}
         account_payload = {"onlyActiveAccounts": True}
         account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
@@ -53,3 +79,9 @@ def health_check():
 📄 Traceback:
 {tb}
 """
+
+# اگر نیاز به webhook هم داری بگو تا اضافه کنم
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
