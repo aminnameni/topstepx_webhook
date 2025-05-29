@@ -50,7 +50,7 @@ def health_check():
         acc_data = account_resp.json()
         accounts = acc_data.get("accounts", [])
 
-        # پیدا کردن حساب هدف (با strip و lower)
+        # پیدا کردن حساب هدف
         target = next(
             (a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
             None
@@ -59,7 +59,6 @@ def health_check():
             return f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."
         cached_account_id = target["id"]
 
-        # گزارش
         output_lines = [f"➡️ name: '{a['name']}', id: {a['id']}, canTrade: {a['canTrade']}" for a in accounts]
         return f"""
 ✅ اتصال موفق انجام شد
@@ -77,6 +76,7 @@ def health_check():
     except Exception as e:
         import traceback
         return f"❌ خطای اجرای توابع:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}"
+
 
 # ========================
 # 📍 مسیر webhook برای ارسال سفارش
@@ -137,7 +137,13 @@ def webhook():
                 "customTag": None,
                 "linkedOrderId": None
             }
-            return requests.post(ORDER_URL, json=payload, headers=headers).json()
+            print("📤 ارسال سفارش با payload:\n", payload)
+
+            response = requests.post(ORDER_URL, json=payload, headers=headers)
+            order_data = response.json()
+            print("📥 پاسخ کامل سفارش:\n", order_data)
+
+            return order_data
 
         # تلاش اول
         result = place_order()
@@ -150,11 +156,12 @@ def webhook():
         if result.get("success"):
             return f"✅ سفارش ارسال شد! Order ID: {result.get('orderId')}"
         else:
-            return f"❌ خطا در سفارش: {result.get('errorMessage')}", 500
+            return f"❌ خطا در سفارش:\n{result}", 500
 
     except Exception as e:
         import traceback
         return f"⚠️ خطای غیرمنتظره:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}", 500
+
 
 # ========================
 # اجرای سرور
