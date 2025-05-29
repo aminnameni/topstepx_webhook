@@ -1,6 +1,7 @@
 from flask import Flask, request
 import requests
 import os
+import traceback
 
 app = Flask(__name__)
 
@@ -15,54 +16,51 @@ LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
 VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
 ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
 ORDER_URL = f"{BASE_URL}/api/Order/place"
+CONTRACT_SEARCH_URL = f"{BASE_URL}/api/Contract/search"
 
 # کش توکن و شناسه حساب
 cached_token = None
 cached_account_id = None
 
-# ========================
-# 📍 مسیر بررسی اتصال
-# ========================
 @app.route("/", methods=["GET"])
 def health_check():
     global cached_token, cached_account_id
+
     try:
-        # ورود
         login_payload = {"userName": USERNAME, "apiKey": API_KEY}
         login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
+
         if not login_data.get("success"):
             return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
-        token = login_data["token"]
 
-        # اعتبارسنجی
+        token = login_data["token"]
         validate_headers = {"Authorization": f"Bearer {token}"}
         validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
         validate_data = validate_resp.json()
+
         if not validate_data.get("success"):
             return "❌ توکن نامعتبر است."
+
         cached_token = validate_data["newToken"]
 
-        # دریافت حساب‌ها
         account_headers = {"Authorization": f"Bearer {cached_token}"}
         account_payload = {"onlyActiveAccounts": True}
         account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
         acc_data = account_resp.json()
-        accounts = acc_data.get("accounts", [])
 
-        # پیدا کردن حساب هدف
-        target = next(
-            (a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
-            None
-        )
+        accounts = acc_data.get("accounts", [])
+        output_lines = [f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
+
+        target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()), None)
         if not target:
             return f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."
         cached_account_id = target["id"]
 
-        output_lines = [f"➡️ name: '{a['name']}', id: {a['id']}, canTrade: {a['canTrade']}" for a in accounts]
         return f"""
-✅ اتصال موفق انجام شد
+✅ اتصال موفق انجام شد  
 🟢 تعداد حساب‌ها: {len(accounts)}
+
 🔎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
 🔐 USERNAME: {USERNAME}
 
@@ -74,97 +72,33 @@ def health_check():
 """
 
     except Exception as e:
-        import traceback
-        return f"❌ خطای اجرای توابع:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}"
+        return f"""
+❌ خطای اجرای توابع:
+{e}
 
+📄 Traceback:
+{traceback.format_exc()}
+"""
 
-# ========================
-# 📍 مسیر webhook برای ارسال سفارش
-# ========================
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    global cached_token, cached_account_id
+@app.route("/contracts", methods=["GET"])
+def show_contracts():
+    global cached_token
     try:
-        data = request.get_json()
-        symbol = data.get("symbol")
-        side = data.get("side")
-        qty = data.get("qty")
+        if not cached_token:
+            return "❌ توکن موجود نیست. ابتدا مسیر اصلی را صدا بزنید."
 
-        if not all([symbol, side, qty]):
-            return "❌ داده ناقص است", 400
+        headers = {"Authorization": f"Bearer {cached_token}"}
+        contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json={})
+        contract_data = contract_resp.json()
 
-        # نگاشت symbol به contractId
-        contract_map = {
-            "MNQ": "CON.F.US.NQ3.M25",
-            "MGC": "CON.F.US.GC.M25",
-            "MBT": "CON.F.CME.BTC.M25"
-        }
-        contract_id = contract_map.get(symbol.upper())
-        if not contract_id:
-            return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
-
-        def refresh_token_and_account():
-            global cached_token, cached_account_id
-            login_payload = {"userName": USERNAME, "apiKey": API_KEY}
-            token = requests.post(LOGIN_URL, json=login_payload).json().get("token")
-
-            validate_headers = {"Authorization": f"Bearer {token}"}
-            cached_token = requests.post(VALIDATE_URL, headers=validate_headers).json().get("newToken")
-
-            account_headers = {"Authorization": f"Bearer {cached_token}"}
-            account_payload = {"onlyActiveAccounts": True}
-            accounts = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload).json().get("accounts", [])
-
-            target = next(
-                (a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
-                None
-            )
-            if not target:
-                raise Exception(f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد.")
-            cached_account_id = target["id"]
-
-        def place_order():
-            headers = {"Authorization": f"Bearer {cached_token}"}
-            payload = {
-                "accountId": cached_account_id,
-                "contractId": contract_id,
-                "type": 2,
-                "side": 1 if side.lower() == "buy" else 2,
-                "size": qty,
-                "limitPrice": None,
-                "stopPrice": None,
-                "trailPrice": None,
-                "customTag": None,
-                "linkedOrderId": None
-            }
-            print("📤 ارسال سفارش با payload:\n", payload)
-
-            response = requests.post(ORDER_URL, json=payload, headers=headers)
-            order_data = response.json()
-            print("📥 پاسخ کامل سفارش:\n", order_data)
-
-            return order_data
-
-        # تلاش اول
-        result = place_order()
-
-        # اگر ناموفق بود، یک بار دیگر با توکن تازه
-        if not result.get("success"):
-            refresh_token_and_account()
-            result = place_order()
-
-        if result.get("success"):
-            return f"✅ سفارش ارسال شد! Order ID: {result.get('orderId')}"
-        else:
-            return f"❌ خطا در سفارش:\n{result}", 500
+        lines = [f"📄 {c['symbol']} → {c['contractId']}" for c in contract_data.get("contracts", [])]
+        return f"""
+✅ لیست قراردادهای قابل معامله:
+{chr(10).join(lines)}
+"""
 
     except Exception as e:
-        import traceback
-        return f"⚠️ خطای غیرمنتظره:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}", 500
+        return f"❌ خطای بررسی قراردادها:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}"
 
-
-# ========================
-# اجرای سرور
-# ========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
