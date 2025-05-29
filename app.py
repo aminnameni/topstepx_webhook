@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# اطلاعات از محیط
+# دریافت اطلاعات از متغیرهای محیطی
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
@@ -20,33 +20,30 @@ ORDER_URL = f"{BASE_URL}/api/Order/place"
 cached_token = None
 cached_account_id = None
 
-# مسیر بررسی و چاپ لیست حساب‌ها
+# ========================
+# 📍 مسیر بررسی اتصال و لیست حساب‌ها
+# ========================
 @app.route("/", methods=["GET"])
 def health_check():
     global cached_token, cached_account_id
-
     try:
-        # مرحله ورود
+        # ورود
         login_payload = {"userName": USERNAME, "apiKey": API_KEY}
         login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
-
         if not login_data.get("success"):
             return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
-
         token = login_data["token"]
 
-        # مرحله اعتبارسنجی
+        # اعتبارسنجی
         validate_headers = {"Authorization": f"Bearer {token}"}
         validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
         validate_data = validate_resp.json()
-
         if not validate_data.get("success"):
             return "❌ توکن نامعتبر است."
-
         cached_token = validate_data["newToken"]
 
-        # مرحله گرفتن لیست حساب‌ها
+        # دریافت حساب‌ها
         account_headers = {"Authorization": f"Bearer {cached_token}"}
         account_payload = {"onlyActiveAccounts": True}
         account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
@@ -55,10 +52,15 @@ def health_check():
         accounts = acc_data.get("accounts", [])
         output_lines = [f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
 
+        # شناسایی حساب هدف
+        target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()), None)
+        if not target:
+            return f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."
+        cached_account_id = target["id"]
+
         return f"""
 ✅ اتصال موفق انجام شد  
 🟢 تعداد حساب‌ها: {len(accounts)}
-
 🔎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
 🔐 USERNAME: {USERNAME}
 
@@ -71,17 +73,87 @@ def health_check():
 
     except Exception as e:
         import traceback
-        tb = traceback.format_exc()
-        return f"""
-❌ خطای اجرای توابع:
-{e}
+        return f"❌ خطای اجرای توابع:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}"
 
-📄 Traceback:
-{tb}
-"""
+# ========================
+# 📍 مسیر دریافت و ارسال سفارش
+# ========================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    global cached_token, cached_account_id
+    try:
+        data = request.get_json()
+        symbol = data.get("symbol")
+        side = data.get("side")
+        qty = data.get("qty")
 
-# اگر نیاز به webhook هم داری بگو تا اضافه کنم
+        if not all([symbol, side, qty]):
+            return "❌ داده ناقص است", 400
 
+        # نگاشت symbol به contractId
+        contract_map = {
+            "MNQ": "CON.F.US.NQ3.M25",
+            "MGC": "CON.F.US.GC.M25",
+            "MBT": "CON.F.CME.BTC.M25"
+        }
+        contract_id = contract_map.get(symbol.upper())
+        if not contract_id:
+            return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
+        def get_fresh_token_and_account():
+            global cached_token, cached_account_id
+            login_payload = {"userName": USERNAME, "apiKey": API_KEY}
+            login_resp = requests.post(LOGIN_URL, json=login_payload)
+            token = login_resp.json().get("token")
+
+            validate_headers = {"Authorization": f"Bearer {token}"}
+            validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
+            cached_token = validate_resp.json().get("newToken")
+
+            account_headers = {"Authorization": f"Bearer {cached_token}"}
+            account_payload = {"onlyActiveAccounts": True}
+            account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
+            accounts = account_resp.json().get("accounts", [])
+            target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()), None)
+            if not target:
+                raise Exception(f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد.")
+            cached_account_id = target["id"]
+
+        def place_order():
+            headers = {"Authorization": f"Bearer {cached_token}"}
+            payload = {
+                "accountId": cached_account_id,
+                "contractId": contract_id,
+                "type": 2,
+                "side": 1 if side.lower() == "buy" else 2,
+                "size": qty,
+                "limitPrice": None,
+                "stopPrice": None,
+                "trailPrice": None,
+                "customTag": None,
+                "linkedOrderId": None
+            }
+            return requests.post(ORDER_URL, json=payload, headers=headers).json()
+
+        # تلاش اول
+        result = place_order()
+
+        # اگر موفق نبود، یک بار دیگر با توکن تازه تلاش کن
+        if not result.get("success"):
+            get_fresh_token_and_account()
+            result = place_order()
+
+        if result.get("success"):
+            return f"✅ سفارش ارسال شد! Order ID: {result.get('orderId')}"
+        else:
+            return f"❌ خطا در سفارش: {result.get('errorMessage')}", 500
+
+    except Exception as e:
+        import traceback
+        return f"⚠️ خطای غیرمنتظره:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}", 500
+
+# =================
+# اجرای سرور Flask
+# =================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
