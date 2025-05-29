@@ -50,7 +50,7 @@ def health_check():
         acc_data = account_resp.json()
 
         accounts = acc_data.get("accounts", [])
-        output_lines = [f"➤️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
+        output_lines = [f"➔ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
 
         target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()), None)
         if not target:
@@ -64,7 +64,7 @@ def health_check():
 🖎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
 🔐 USERNAME: {USERNAME}
 
-📅 پاسخ خام:
+🗕️ پاسخ خام:
 {acc_data}
 
 📋 حساب‌ها:
@@ -105,7 +105,7 @@ def show_contracts():
 ✅ لیست قراردادهای قابل معامله:
 {chr(10).join(lines)}
 
-📅 پاسخ خام:
+🗕️ پاسخ خام:
 {contract_data}
 """
 
@@ -117,6 +117,61 @@ def show_contracts():
 📄 Traceback:
 {traceback.format_exc()}
 """
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    global cached_token, cached_account_id
+    try:
+        data = request.get_json()
+        symbol = data.get("symbol")
+        side = data.get("side")
+        qty = data.get("qty")
+
+        if not all([symbol, side, qty]):
+            return "❌ داده‌های ناقص دریافت شد.", 400
+
+        contract_map = {
+            "MNQ": "CON.F.US.MNQ.M25",
+            "NQ": "CON.F.US.ENQ.M25",
+            "GC": "CON.F.US.GC.M25",
+            "MGC": "CON.F.US.MGC.M25",
+            "HG": "CON.F.US.HG.N25",
+            "CL": "CON.F.US.CL.N25",
+            "NG": "CON.F.US.NG.N25"
+        }
+        contract_id = contract_map.get(symbol.upper())
+        if not contract_id:
+            return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
+
+        order_payload = {
+            "accountId": cached_account_id,
+            "contractId": contract_id,
+            "type": 2,
+            "side": 1 if side.lower() == "buy" else 2,
+            "size": qty,
+            "limitPrice": None,
+            "stopPrice": None,
+            "trailPrice": None,
+            "customTag": None,
+            "linkedOrderId": None
+        }
+        headers = {"Authorization": f"Bearer {cached_token}"}
+        order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
+        order_data = order_resp.json()
+
+        if order_data.get("success"):
+            return f"✅ سفارش ارسال شد! Order ID: {order_data.get('orderId')}"
+        else:
+            return f"❌ خطا در سفارش: {order_data.get('errorMessage')}"
+
+    except Exception as e:
+        return f"""
+⚠️ خطای پردازش سفارش:
+{e}
+
+📄 Traceback:
+{traceback.format_exc()}
+""", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
