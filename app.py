@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# گرفتن اطلاعات از محیط اجرا (از Render یا .env در لوکال)
+# اطلاعات محیطی از Render
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
@@ -16,12 +16,12 @@ VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
 ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
 ORDER_URL = f"{BASE_URL}/api/Order/place"
 
-# کش توکن و شناسه حساب
+# کش توکن و حساب
 cached_token = None
 cached_account_id = None
 
 
-# === گرفتن توکن و حساب معاملاتی ===
+# === گرفتن توکن و حساب ===
 def refresh_token_and_account():
     global cached_token, cached_account_id
 
@@ -52,7 +52,7 @@ def refresh_token_and_account():
     print("📥 پاسخ خام لیست حساب‌ها:", acc_data)
 
     accounts = acc_data.get("accounts", [])
-    print("📣 لیست حساب‌های دریافتی:")
+    print("📣 لیست حساب‌ها:")
     for acc in accounts:
         print(f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}")
 
@@ -67,15 +67,20 @@ def refresh_token_and_account():
     cached_account_id = target_account["id"]
 
 
+# مسیر تست توکن و حساب
 @app.route("/", methods=["GET"])
 def health_check():
     try:
         refresh_token_and_account()
         return f"✅ Token & Account آماده است\n📘 ID: {cached_account_id}"
     except Exception as e:
-        return f"❌ خطا:\n{e}"
+        import traceback
+        tb = traceback.format_exc()
+        print("🔥 خطای کامل:", tb)
+        return f"❌ خطا:\n{e}\n\n📄 Traceback:\n{tb}"
 
 
+# مسیر دریافت سفارش از TradingView
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
