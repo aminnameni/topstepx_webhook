@@ -82,19 +82,23 @@ def health_check():
 
 @app.route("/contracts", methods=["GET"])
 def show_contracts():
-    global cached_token
+    global cached_token, cached_account_id
     try:
-        if not cached_token:
-            return "❌ توکن موجود نیست. ابتدا مسیر اصلی را صدا بزنید."
+        if not cached_token or not cached_account_id:
+            return "❌ توکن یا شناسه حساب موجود نیست. ابتدا مسیر اصلی را صدا بزنید."
 
         headers = {"Authorization": f"Bearer {cached_token}"}
-        contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json={})
+        payload = {"accountId": cached_account_id}
+        contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json=payload)
         contract_data = contract_resp.json()
 
         lines = [f"📄 {c['symbol']} → {c['contractId']}" for c in contract_data.get("contracts", [])]
         return f"""
 ✅ لیست قراردادهای قابل معامله:
 {chr(10).join(lines)}
+
+📥 پاسخ خام:
+{contract_data}
 """
 
     except Exception as e:
