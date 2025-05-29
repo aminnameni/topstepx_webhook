@@ -21,15 +21,13 @@ def webhook():
         if not contract_id:
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
-        # تابع داخلی برای ارسال سفارش با retry در صورت نیاز
-        def place_order_with_retry():
+        def place_order():
             global cached_token, cached_account_id
             if not cached_token or not cached_account_id:
-                print("🔁 در حال درخواست توکن جدید...")
-                # دستی simulate route "/" برای گرفتن توکن جدید
-                check_token_and_account()
+                refresh_token_and_account()
 
-            order_payload = {
+            headers = {"Authorization": f"Bearer {cached_token}"}
+            payload = {
                 "accountId": cached_account_id,
                 "contractId": contract_id,
                 "type": 2,
@@ -41,28 +39,20 @@ def webhook():
                 "customTag": None,
                 "linkedOrderId": None
             }
-            headers = {"Authorization": f"Bearer {cached_token}"}
-            order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
-            order_data = order_resp.json()
-            print("📤 پاسخ سفارش:", order_data)
+            resp = requests.post(ORDER_URL, json=payload, headers=headers)
+            return resp.json()
 
-            # اگر موفق نبود، یک بار دیگر با توکن جدید تلاش کن
-            if not order_data.get("success"):
-                print("⚠️ خطا در سفارش. تلاش دوباره پس از به‌روزرسانی توکن...")
-                check_token_and_account()
-                headers["Authorization"] = f"Bearer {cached_token}"
-                order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
-                order_data = order_resp.json()
-                print("🔁 پاسخ سفارش بعد از ری‌تری:", order_data)
+        result = place_order()
 
-            return order_data
-
-        result = place_order_with_retry()
+        if not result.get("success"):
+            print("⚠️ تلاش مجدد با توکن جدید...")
+            refresh_token_and_account()
+            result = place_order()
 
         if result.get("success"):
             return f"✅ سفارش ارسال شد! Order ID: {result.get('orderId')}"
         else:
-            return f"❌ خطا در سفارش بعد از تلاش مجدد: {result.get('errorMessage')}"
+            return f"❌ خطا: {result.get('errorMessage')}", 500
 
     except Exception as e:
         return f"⚠️ خطای پردازش سفارش:\n{e}", 500
