@@ -133,6 +133,7 @@ def webhook():
         contract_map = {
             "MNQ": "CON.F.US.MNQ.M25",
             "NQ": "CON.F.US.ENQ.M25",
+            "YM": "CON.F.US.YM.M25",
             "GC": "CON.F.US.GC.M25",
             "MGC": "CON.F.US.MGC.M25",
             "HG": "CON.F.US.HG.N25",
