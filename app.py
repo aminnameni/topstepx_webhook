@@ -88,7 +88,11 @@ def show_contracts():
             return "❌ توکن یا شناسه حساب موجود نیست. ابتدا مسیر اصلی را صدا بزنید."
 
         headers = {"Authorization": f"Bearer {cached_token}"}
-        payload = {"accountId": cached_account_id}
+        payload = {
+            "accountId": cached_account_id,
+            "searchText": "",
+            "live": True
+        }
         contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json=payload)
         contract_data = contract_resp.json()
 
