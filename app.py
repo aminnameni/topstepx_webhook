@@ -137,12 +137,9 @@ def webhook():
             "MGC": "CON.F.US.MGC.M25",
             "HG": "CON.F.US.HG.N25",
             "CL": "CON.F.US.CL.N25",
-            "NG": "CON.F.US.NG.N25",
-            "YM": "CON.F.US.YM.M25"
+            "NG": "CON.F.US.NG.N25"
         }
-
-        symbol_key = symbol.split(":")[-1][:3].upper()
-        contract_id = contract_map.get(symbol_key)
+        contract_id = contract_map.get(symbol.upper())
         if not contract_id:
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
