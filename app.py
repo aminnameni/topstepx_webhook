@@ -1,10 +1,6 @@
 from flask import Flask, request
 import requests
 import os
-from dotenv import load_dotenv
-
-# بارگذاری متغیرهای محیطی (.env در لوکال / محیط در Render)
-load_dotenv()
 
 app = Flask(__name__)
 
