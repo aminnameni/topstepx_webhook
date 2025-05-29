@@ -23,7 +23,7 @@ def webhook():
 
         # تابع داخلی برای ارسال سفارش با retry در صورت نیاز
         def place_order_with_retry():
-            nonlocal cached_token, cached_account_id
+            global cached_token, cached_account_id
             if not cached_token or not cached_account_id:
                 print("🔁 در حال درخواست توکن جدید...")
                 # دستی simulate route "/" برای گرفتن توکن جدید
