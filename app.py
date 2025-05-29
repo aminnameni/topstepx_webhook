@@ -89,13 +89,16 @@ def show_contracts():
 
         headers = {"Authorization": f"Bearer {cached_token}"}
         payload = {
-            "searchText": "",
-            "live": True
+            "searchText": "NQ",
+            "live": False
         }
         contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json=payload)
         contract_data = contract_resp.json()
 
         lines = [f"📄 {c['symbol']} → {c['contractId']}" for c in contract_data.get("contracts", [])]
+        if not lines:
+            lines.append("⚠️ هیچ قراردادی پیدا نشد.")
+
         return f"""
 ✅ لیست قراردادهای قابل معامله:
 {chr(10).join(lines)}
