@@ -90,7 +90,7 @@ def show_contracts():
         headers = {"Authorization": f"Bearer {cached_token}"}
         payload = {
             "accountId": cached_account_id,
-            "searchText": "",
+            "searchText": "MNQ",
             "live": True
         }
         contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json=payload)
