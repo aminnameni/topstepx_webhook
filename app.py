@@ -50,7 +50,7 @@ def health_check():
         acc_data = account_resp.json()
 
         accounts = acc_data.get("accounts", [])
-        output_lines = [f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
+        output_lines = [f"➤️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
 
         target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()), None)
         if not target:
@@ -61,7 +61,7 @@ def health_check():
 ✅ اتصال موفق انجام شد  
 🟢 تعداد حساب‌ها: {len(accounts)}
 
-🔎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
+🖎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
 🔐 USERNAME: {USERNAME}
 
 📅 پاسخ خام:
@@ -95,9 +95,11 @@ def show_contracts():
         contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json=payload)
         contract_data = contract_resp.json()
 
-        lines = [f"📄 {c.get('symbol', 'نامشخص')} → {c.get('contractId', 'نامشخص')}" for c in contract_data.get("contracts", [])]
-        if not lines or contract_data.get("contracts") == []:
-            lines = ["⚠️ هیچ قراردادی پیدا نشد."]
+        contracts = contract_data.get("contracts", [])
+        if not contracts:
+            return "⚠️ هیچ قراردادی یافت نشد."
+
+        lines = [f"📄 {c.get('name', 'بدون نام')} → {c.get('id', 'بدون شناسه')}" for c in contracts]
 
         return f"""
 ✅ لیست قراردادهای قابل معامله:
