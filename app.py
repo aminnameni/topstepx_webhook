@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# دریافت اطلاعات از متغیرهای محیطی
+# اطلاعات محیطی
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
@@ -21,7 +21,7 @@ cached_token = None
 cached_account_id = None
 
 # ========================
-# 📍 مسیر بررسی اتصال و لیست حساب‌ها
+# 📍 مسیر بررسی اتصال
 # ========================
 @app.route("/", methods=["GET"])
 def health_check():
@@ -48,18 +48,21 @@ def health_check():
         account_payload = {"onlyActiveAccounts": True}
         account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
         acc_data = account_resp.json()
-
         accounts = acc_data.get("accounts", [])
-        output_lines = [f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}" for acc in accounts]
 
-        # شناسایی حساب هدف
-        target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()), None)
+        # پیدا کردن حساب هدف (با strip و lower)
+        target = next(
+            (a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
+            None
+        )
         if not target:
             return f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."
         cached_account_id = target["id"]
 
+        # گزارش
+        output_lines = [f"➡️ name: '{a['name']}', id: {a['id']}, canTrade: {a['canTrade']}" for a in accounts]
         return f"""
-✅ اتصال موفق انجام شد  
+✅ اتصال موفق انجام شد
 🟢 تعداد حساب‌ها: {len(accounts)}
 🔎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
 🔐 USERNAME: {USERNAME}
@@ -76,7 +79,7 @@ def health_check():
         return f"❌ خطای اجرای توابع:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}"
 
 # ========================
-# 📍 مسیر دریافت و ارسال سفارش
+# 📍 مسیر webhook برای ارسال سفارش
 # ========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -100,21 +103,22 @@ def webhook():
         if not contract_id:
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
-        def get_fresh_token_and_account():
+        def refresh_token_and_account():
             global cached_token, cached_account_id
             login_payload = {"userName": USERNAME, "apiKey": API_KEY}
-            login_resp = requests.post(LOGIN_URL, json=login_payload)
-            token = login_resp.json().get("token")
+            token = requests.post(LOGIN_URL, json=login_payload).json().get("token")
 
             validate_headers = {"Authorization": f"Bearer {token}"}
-            validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
-            cached_token = validate_resp.json().get("newToken")
+            cached_token = requests.post(VALIDATE_URL, headers=validate_headers).json().get("newToken")
 
             account_headers = {"Authorization": f"Bearer {cached_token}"}
             account_payload = {"onlyActiveAccounts": True}
-            account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
-            accounts = account_resp.json().get("accounts", [])
-            target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()), None)
+            accounts = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload).json().get("accounts", [])
+
+            target = next(
+                (a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
+                None
+            )
             if not target:
                 raise Exception(f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد.")
             cached_account_id = target["id"]
@@ -138,9 +142,9 @@ def webhook():
         # تلاش اول
         result = place_order()
 
-        # اگر موفق نبود، یک بار دیگر با توکن تازه تلاش کن
+        # اگر ناموفق بود، یک بار دیگر با توکن تازه
         if not result.get("success"):
-            get_fresh_token_and_account()
+            refresh_token_and_account()
             result = place_order()
 
         if result.get("success"):
@@ -152,8 +156,8 @@ def webhook():
         import traceback
         return f"⚠️ خطای غیرمنتظره:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}", 500
 
-# =================
-# اجرای سرور Flask
-# =================
+# ========================
+# اجرای سرور
+# ========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
