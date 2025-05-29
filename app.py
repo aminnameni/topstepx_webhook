@@ -46,13 +46,15 @@ def refresh_token_and_account():
 
     cached_token = validate_data["newToken"]
 
+    # ✅ ارسال پارامتر onlyActiveAccounts برای دریافت لیست حساب‌ها
     account_headers = {"Authorization": f"Bearer {cached_token}"}
-    account_resp = requests.post(ACCOUNT_URL, headers=account_headers)
+    account_payload = {"onlyActiveAccounts": True}
+    account_resp = requests.post(ACCOUNT_URL, headers=account_headers, json=account_payload)
     acc_data = account_resp.json()
     print("📥 پاسخ خام لیست حساب‌ها:", acc_data)
 
     accounts = acc_data.get("accounts", [])
-    print("📣 لیست حساب‌ها:")
+    print("📣 لیست حساب‌های فعال:")
     for acc in accounts:
         print(f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}")
 
@@ -67,7 +69,6 @@ def refresh_token_and_account():
     cached_account_id = target_account["id"]
 
 
-# مسیر تست توکن و حساب
 @app.route("/", methods=["GET"])
 def health_check():
     try:
@@ -80,7 +81,6 @@ def health_check():
         return f"❌ خطا:\n{e}\n\n📄 Traceback:\n{tb}"
 
 
-# مسیر دریافت سفارش از TradingView
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
