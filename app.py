@@ -96,8 +96,8 @@ def show_contracts():
         contract_data = contract_resp.json()
 
         lines = [f"📄 {c.get('symbol', 'نامشخص')} → {c.get('contractId', 'نامشخص')}" for c in contract_data.get("contracts", [])]
-        if not lines:
-            lines.append("⚠️ هیچ قراردادی پیدا نشد.")
+        if not lines or contract_data.get("contracts") == []:
+            lines = ["⚠️ هیچ قراردادی پیدا نشد."]
 
         return f"""
 ✅ لیست قراردادهای قابل معامله:
@@ -108,11 +108,13 @@ def show_contracts():
 """
 
     except Exception as e:
-        return f"❌ خطای بررسی قراردادها:
+        return f"""
+❌ خطای بررسی قراردادها:
 {e}
 
 📄 Traceback:
-{traceback.format_exc()}"
+{traceback.format_exc()}
+"""
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
