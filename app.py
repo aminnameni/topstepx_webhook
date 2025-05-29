@@ -4,24 +4,24 @@ import os
 
 app = Flask(__name__)
 
-# گرفتن اطلاعات حساس از محیط
+# اطلاعات از محیط اجرا
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
 
-# آدرس‌های API
+# URLها
 BASE_URL = "https://api.topstepx.com"
 LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
 VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
 ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
 ORDER_URL = f"{BASE_URL}/api/Order/place"
 
-# حافظه توکن و آیدی حساب
+# کش توکن و حساب
 cached_token = None
 cached_account_id = None
 
 
-# تابع گرفتن توکن جدید و آیدی حساب
+# گرفتن توکن و شناسه حساب
 def refresh_token_and_account():
     global cached_token, cached_account_id
 
@@ -46,9 +46,13 @@ def refresh_token_and_account():
     account_resp = requests.post(ACCOUNT_URL, headers=account_headers)
     acc_data = account_resp.json()
 
+    accounts = acc_data.get("accounts", [])
+    print("🔎 لیست حساب‌ها:")
+    for acc in accounts:
+        print(f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}")
+
     target_account = next(
-        (acc for acc in acc_data.get("accounts", [])
-         if acc.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()),
+        (acc for acc in accounts if acc.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.lower()),
         None
     )
 
@@ -58,7 +62,6 @@ def refresh_token_and_account():
     cached_account_id = target_account["id"]
 
 
-# مسیر تست سلامت و بررسی توکن
 @app.route("/", methods=["GET"])
 def health_check():
     try:
@@ -68,7 +71,6 @@ def health_check():
         return f"❌ خطا:\n{e}"
 
 
-# مسیر دریافت سیگنال و ارسال سفارش
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -82,7 +84,6 @@ def webhook():
         if not all([symbol, side, qty]):
             return "❌ داده ناقص است", 400
 
-        # نگاشت نمادها به contractId
         contract_map = {
             "MNQ": "CON.F.US.NQ3.M25",
             "MGC": "CON.F.US.GC.M25",
@@ -115,7 +116,6 @@ def webhook():
 
         result = place_order()
 
-        # اگر سفارش موفق نبود، یک بار دیگر با توکن جدید تلاش کن
         if not result.get("success"):
             print("⚠️ تلاش مجدد با توکن جدید...")
             refresh_token_and_account()
