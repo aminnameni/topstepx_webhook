@@ -64,7 +64,7 @@ def health_check():
 🔎 TARGET_ACCOUNT: {TARGET_ACCOUNT_NAME}
 🔐 USERNAME: {USERNAME}
 
-📥 پاسخ خام:
+📅 پاسخ خام:
 {acc_data}
 
 📋 حساب‌ها:
@@ -95,7 +95,7 @@ def show_contracts():
         contract_resp = requests.post(CONTRACT_SEARCH_URL, headers=headers, json=payload)
         contract_data = contract_resp.json()
 
-        lines = [f"📄 {c['symbol']} → {c['contractId']}" for c in contract_data.get("contracts", [])]
+        lines = [f"📄 {c.get('symbol', 'نامشخص')} → {c.get('contractId', 'نامشخص')}" for c in contract_data.get("contracts", [])]
         if not lines:
             lines.append("⚠️ هیچ قراردادی پیدا نشد.")
 
@@ -103,12 +103,16 @@ def show_contracts():
 ✅ لیست قراردادهای قابل معامله:
 {chr(10).join(lines)}
 
-📥 پاسخ خام:
+📅 پاسخ خام:
 {contract_data}
 """
 
     except Exception as e:
-        return f"❌ خطای بررسی قراردادها:\n{e}\n\n📄 Traceback:\n{traceback.format_exc()}"
+        return f"❌ خطای بررسی قراردادها:
+{e}
+
+📄 Traceback:
+{traceback.format_exc()}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
