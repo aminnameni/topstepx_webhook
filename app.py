@@ -143,11 +143,13 @@ def webhook():
         if not contract_id:
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
+        side_clean = side.strip().lower()
+
         order_payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
             "type": 2,
-            "side": 1 if side.lower() == "buy" else 2,
+            "side": 1 if side_clean == "buy" else 2,
             "size": qty,
             "limitPrice": None,
             "stopPrice": None,
