@@ -4,38 +4,42 @@ import os
 
 app = Flask(__name__)
 
-# اطلاعات از محیط اجرا
+# گرفتن اطلاعات از محیط اجرا (از Render یا .env در لوکال)
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
 
-# URLها
+# آدرس‌های API
 BASE_URL = "https://api.topstepx.com"
 LOGIN_URL = f"{BASE_URL}/api/Auth/loginKey"
 VALIDATE_URL = f"{BASE_URL}/api/Auth/validate"
 ACCOUNT_URL = f"{BASE_URL}/api/Account/search"
 ORDER_URL = f"{BASE_URL}/api/Order/place"
 
-# کش توکن و حساب
+# کش توکن و شناسه حساب
 cached_token = None
 cached_account_id = None
 
 
-# گرفتن توکن و شناسه حساب
+# === گرفتن توکن و حساب معاملاتی ===
 def refresh_token_and_account():
     global cached_token, cached_account_id
 
+    print("🚀 مرحله ورود به حساب...")
     login_payload = {"userName": USERNAME, "apiKey": API_KEY}
     login_resp = requests.post(LOGIN_URL, json=login_payload)
     login_data = login_resp.json()
+    print("🟢 پاسخ ورود:", login_data)
 
     if not login_data.get("success"):
         raise Exception(f"❌ ورود ناموفق: {login_data.get('errorMessage')}")
 
     token = login_data["token"]
+
     validate_headers = {"Authorization": f"Bearer {token}"}
     validate_resp = requests.post(VALIDATE_URL, headers=validate_headers)
     validate_data = validate_resp.json()
+    print("🔐 پاسخ اعتبارسنجی:", validate_data)
 
     if not validate_data.get("success"):
         raise Exception("❌ توکن نامعتبر است.")
@@ -45,9 +49,10 @@ def refresh_token_and_account():
     account_headers = {"Authorization": f"Bearer {cached_token}"}
     account_resp = requests.post(ACCOUNT_URL, headers=account_headers)
     acc_data = account_resp.json()
+    print("📥 پاسخ خام لیست حساب‌ها:", acc_data)
 
     accounts = acc_data.get("accounts", [])
-    print("🔎 لیست حساب‌ها:")
+    print("📣 لیست حساب‌های دریافتی:")
     for acc in accounts:
         print(f"➡️ name: '{acc.get('name')}', id: {acc.get('id')}, canTrade: {acc.get('canTrade')}")
 
