@@ -150,17 +150,19 @@ def webhook():
         else:
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
-        side_clean = side.strip().lower()
+        side_clean = str(side).strip().lower()
         print(f"📨 side دریافت‌شده: {side_clean} (اصلی: {side})")
 
         if side_clean not in ["buy", "sell"]:
             return f"❌ مقدار side نامعتبر است: {side}", 400
 
+        side_code = 1 if side_clean == "buy" else 2
+
         order_payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
             "type": 2,
-            "side": 1 if side_clean == "buy" else 2,
+            "side": side_code,
             "size": qty,
             "limitPrice": None,
             "stopPrice": None,
@@ -168,6 +170,7 @@ def webhook():
             "customTag": None,
             "linkedOrderId": None
         }
+        print(f"📦 سفارش نهایی: {order_payload}")
         headers = {"Authorization": f"Bearer {cached_token}"}
         order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
         order_data = order_resp.json()
