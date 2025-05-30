@@ -154,9 +154,9 @@ def webhook():
         print(f"📨 side دریافت‌شده: {side_clean} (اصلی: {side})")
 
         if side_clean in ["buy", "long"]:
-            side_code = 1
+            side_code = 0  # Bid
         elif side_clean in ["sell", "short"]:
-            side_code = 2
+            side_code = 1  # Ask
         else:
             return f"❌ مقدار side نامعتبر است: {side}", 400
 
