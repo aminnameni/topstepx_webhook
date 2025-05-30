@@ -173,8 +173,10 @@ def webhook():
             "linkedOrderId": None
         }
         print(f"📦 سفارش نهایی: {order_payload}")
+
         headers = {"Authorization": f"Bearer {cached_token}"}
         order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
+        print(f"🔁 پاسخ خام سفارش: {order_resp.text}")
         order_data = order_resp.json()
 
         if order_data.get("success"):
