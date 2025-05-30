@@ -144,6 +144,10 @@ def webhook():
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
         side_clean = side.strip().lower()
+        print(f"📨 side دریافت‌شده: {side_clean} (اصلی: {side})")
+
+        if side_clean not in ["buy", "sell"]:
+            return f"❌ مقدار side نامعتبر است: {side}", 400
 
         order_payload = {
             "accountId": cached_account_id,
