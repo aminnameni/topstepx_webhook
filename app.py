@@ -132,17 +132,22 @@ def webhook():
         if not all([symbol, side, qty]):
             return "❌ داده‌های ناقص دریافت شد.", 400
 
-        contract_map = {
-            "MNQ": "CON.F.US.MNQ.M25",
-            "NQ": "CON.F.US.ENQ.M25",
-            "GC": "CON.F.US.GC.M25",
-            "MGC": "CON.F.US.MGC.M25",
-            "HG": "CON.F.US.HG.N25",
-            "CL": "CON.F.US.CL.N25",
-            "NG": "CON.F.US.NG.N25"
-        }
-        contract_id = contract_map.get(symbol.upper())
-        if not contract_id:
+        symbol_clean = symbol.upper()
+        if symbol_clean.startswith("MNQ"):
+            contract_id = "CON.F.US.MNQ.M25"
+        elif symbol_clean.startswith("NQ"):
+            contract_id = "CON.F.US.ENQ.M25"
+        elif symbol_clean.startswith("GC"):
+            contract_id = "CON.F.US.GC.M25"
+        elif symbol_clean.startswith("MGC"):
+            contract_id = "CON.F.US.MGC.M25"
+        elif symbol_clean.startswith("HG"):
+            contract_id = "CON.F.US.HG.N25"
+        elif symbol_clean.startswith("CL"):
+            contract_id = "CON.F.US.CL.N25"
+        elif symbol_clean.startswith("NG"):
+            contract_id = "CON.F.US.NG.N25"
+        else:
             return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
 
         side_clean = side.strip().lower()
