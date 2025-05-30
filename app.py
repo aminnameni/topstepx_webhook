@@ -153,10 +153,12 @@ def webhook():
         side_clean = str(side).strip().lower()
         print(f"📨 side دریافت‌شده: {side_clean} (اصلی: {side})")
 
-        if side_clean not in ["buy", "sell"]:
+        if side_clean in ["buy", "long"]:
+            side_code = 1
+        elif side_clean in ["sell", "short"]:
+            side_code = 2
+        else:
             return f"❌ مقدار side نامعتبر است: {side}", 400
-
-        side_code = 1 if side_clean == "buy" else 2
 
         order_payload = {
             "accountId": cached_account_id,
