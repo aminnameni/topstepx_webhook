@@ -123,6 +123,8 @@ def webhook():
     global cached_token, cached_account_id
     try:
         data = request.get_json()
+        print(f"📨 پیام کامل دریافتی: {data}")
+
         symbol = data.get("symbol")
         side = data.get("side")
         qty = data.get("qty")
