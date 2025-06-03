@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import requests
 import os
 import traceback
@@ -29,14 +29,14 @@ def health_check():
         login_data = login_resp.json()
 
         if not login_data.get("success"):
-            return f"❌ ورود ناموفق: {login_data.get('errorMessage')}"
+            return jsonify({"status": "error", "message": login_data.get("errorMessage")}), 401
 
         token = login_data["token"]
         validate_resp = requests.post(VALIDATE_URL, headers={"Authorization": f"Bearer {token}"})
         validate_data = validate_resp.json()
 
         if not validate_data.get("success"):
-            return "❌ توکن نامعتبر است."
+            return jsonify({"status": "error", "message": "توکن نامعتبر است."}), 401
 
         cached_token = validate_data["newToken"]
 
@@ -50,24 +50,21 @@ def health_check():
         accounts = acc_data.get("accounts", [])
         target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()), None)
         if not target:
-            return f"⚠️ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."
+            return jsonify({"status": "error", "message": f"حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."}), 404
 
         cached_account_id = target["id"]
-        return f"✅ اتصال موفق. حساب فعال: {cached_account_id}"
+        return jsonify({"status": "success", "accountId": cached_account_id})
 
     except Exception as e:
-        return f"""
-❌ خطای اتصال:
-{e}
-
-📄 Traceback:
-{traceback.format_exc()}
-"""
+        return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
     try:
+        if not cached_token or not cached_account_id:
+            return jsonify({"status": "error", "message": "ابتدا اتصال اولیه از طریق GET / برقرار شود."}), 403
+
         data = request.get_json()
         print(f"📨 پیام دریافتی: {data}")
 
@@ -76,9 +73,13 @@ def webhook():
         qty = data.get("qty")
 
         if not all([symbol, side, qty]):
-            return "❌ داده‌های ناقص.", 400
+            return jsonify({"status": "error", "message": "داده‌های ناقص."}), 400
 
-        # تعیین contractId بر اساس نماد
+        try:
+            qty = int(qty)
+        except:
+            return jsonify({"status": "error", "message": f"qty نامعتبر: {qty}"}), 400
+
         symbol_clean = symbol.upper()
         if symbol_clean.startswith("MNQ"):
             contract_id = "CON.F.US.MNQ.M25"
@@ -91,7 +92,7 @@ def webhook():
         elif symbol_clean.startswith("NG"):
             contract_id = "CON.F.US.NG.N25"
         else:
-            return f"❌ Contract ID برای {symbol} تعریف نشده.", 400
+            return jsonify({"status": "error", "message": f"Contract ID برای {symbol} تعریف نشده."}), 400
 
         side_clean = side.strip().lower()
         if side_clean in ["buy", "long", "close_short"]:
@@ -99,7 +100,7 @@ def webhook():
         elif side_clean in ["sell", "short", "close_long"]:
             side_code = 1
         else:
-            return f"❌ مقدار side نامعتبر است: {side}", 400
+            return jsonify({"status": "error", "message": f"مقدار side نامعتبر: {side}"}), 400
 
         order_payload = {
             "accountId": cached_account_id,
@@ -114,6 +115,10 @@ def webhook():
             "linkedOrderId": None
         }
 
+        print("🛠 داده نهایی برای سفارش:")
+        for k, v in order_payload.items():
+            print(f"{k}: {v}")
+
         headers = {"Authorization": f"Bearer {cached_token}"}
         order_resp = requests.post(ORDER_URL, json=order_payload, headers=headers)
 
@@ -123,27 +128,15 @@ def webhook():
         try:
             order_data = order_resp.json()
         except Exception as e:
-            return f"""
-❌ خطا در تبدیل پاسخ به JSON:
-{e}
-
-🧾 متن کامل پاسخ:
-{order_resp.text}
-""", 500
+            return jsonify({"status": "error", "message": "خطا در تبدیل پاسخ به JSON", "detail": str(e), "response": order_resp.text}), 500
 
         if order_data.get("success"):
-            return f"✅ سفارش ارسال شد. ID: {order_data.get('orderId')}"
+            return jsonify({"status": "success", "orderId": order_data.get("orderId")})
         else:
-            return f"❌ خطا در سفارش: {order_data.get('errorMessage')}"
+            return jsonify({"status": "error", "message": order_data.get("errorMessage", "خطای ناشناخته در سفارش")})
 
     except Exception as e:
-        return f"""
-⚠️ خطای پردازش کلی:
-{e}
-
-📄 Traceback:
-{traceback.format_exc()}
-""", 500
+        return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
