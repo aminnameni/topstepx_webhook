@@ -31,8 +31,8 @@ symbol_map = {
     "MNG": {"contractId": "CON.F.US.MNG.N5"},
     "YM": {"contractId": "CON.F.US.YM.M5"},
     "MYM": {"contractId": "CON.F.US.MYM.M5"},
-    "HGN5": {"contractId": "CON.F.US.CPE.N25"},
-    "MHGN5": {"contractId": "CON.F.US.MHG.N25"}
+    "HG": {"contractId": "CON.F.US.CPE.N25"},
+    "MHG": {"contractId": "CON.F.US.MHG.N25"}
 }
 
 @app.route("/", methods=["GET"])
