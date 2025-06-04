@@ -22,15 +22,15 @@ cached_account_id = None
 
 # نگاشت نمادها به اطلاعات دقیق قرارداد در Topstep
 symbol_map = {
-    "MNQ": {"contractId": "CON.F.US.MNQM5"},
-    "MGC": {"contractId": "CON.F.US.MGCQ5"},
-    "GC": {"contractId": "CON.F.US.GCQ5"},
-    "CL": {"contractId": "CON.F.US.CLN5"},
-    "MCL": {"contractId": "CON.F.US.MCLN5"},
-    "NG": {"contractId": "CON.F.US.NGN5"},
-    "MNG": {"contractId": "CON.F.US.MNGN5"},
-    "YM": {"contractId": "CON.F.US.YMM5"},
-    "MYM": {"contractId": "CON.F.US.MYMM5"},
+    "MNQ": {"contractId": "CON.F.US.MNQ.M5"},
+    "MGC": {"contractId": "CON.F.US.MGC.Q5"},
+    "GC": {"contractId": "CON.F.US.GCE.Q5"},
+    "CL": {"contractId": "CON.F.US.CLE.N5"},
+    "MCL": {"contractId": "CON.F.US.MCLE.N5"},
+    "NG": {"contractId": "CON.F.US.NGE.N5"},
+    "MNG": {"contractId": "CON.F.US.MNG.N5"},
+    "YM": {"contractId": "CON.F.US.YM.M5"},
+    "MYM": {"contractId": "CON.F.US.MYM.M5"},
     "HGN5": {"contractId": "CON.F.US.CPE.N25"},
     "MHGN5": {"contractId": "CON.F.US.MHG.N25"}
 }
