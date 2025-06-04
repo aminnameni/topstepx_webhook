@@ -91,6 +91,8 @@ def webhook():
             contract_id = "CON.F.US.CL.N25"
         elif symbol_clean.startswith("NG"):
             contract_id = "CON.F.US.NG.N25"
+        elif symbol_clean.startswith("HG"):
+            contract_id = "CON.F.US.HG.N25"
         else:
             return jsonify({"status": "error", "message": f"Contract ID برای {symbol} تعریف نشده."}), 400
 
