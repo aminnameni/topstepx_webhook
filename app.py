@@ -104,15 +104,15 @@ def webhook():
         if symbol_clean.startswith("MNQ"):
             contract_id = "CON.F.US.MNQ.M25"
         elif symbol_clean.startswith("GC"):
-            contract_id = "CON.F.US.GC.M25"
+            contract_id = "CON.F.US.GCE.Q25"
         elif symbol_clean.startswith("MGC"):
-            contract_id = "CON.F.US.MGC.M25"
+            contract_id = "CON.F.US.MGC.Q25"
         elif symbol_clean.startswith("CL"):
-            contract_id = "CON.F.US.CL.N25"
+            contract_id = "CON.F.US.CLE.N25"
         elif symbol_clean.startswith("NG"):
-            contract_id = "CON.F.US.NG.N25"
+            contract_id = "CON.F.US.NGE.N25"
         elif symbol_clean.startswith("HG"):
-            contract_id = "CON.F.US.HG.N25"
+            contract_id = "CON.F.US.CPE.N25"
         else:
             msg = f"⚠️ Contract ID برای {symbol} تعریف نشده."
             print(msg)
