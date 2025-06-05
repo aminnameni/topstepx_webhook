@@ -20,7 +20,7 @@ ORDER_URL = f"{BASE_URL}/api/Order/place"
 cached_token = None
 cached_account_id = None
 
-# نگاشت نمادها به اطلاعات دقیق قرارداد در Topstep
+# نگاشت نمادها به شناسه کانترکت فعال
 symbol_map = {
     "MNQ": {"contractId": "CON.F.US.MNQM5"},
     "MGC": {"contractId": "CON.F.US.MGCQ5"},
@@ -39,11 +39,14 @@ symbol_map = {
 def health_check():
     global cached_token, cached_account_id
     try:
+        print("🔐 اجرای مرحله لاگین...")
+
         login_payload = {"userName": USERNAME, "apiKey": API_KEY}
         login_resp = requests.post(LOGIN_URL, json=login_payload)
         login_data = login_resp.json()
 
         if not login_data.get("success"):
+            print("❌ خطا در لاگین:", login_data.get("errorMessage"))
             return jsonify({"status": "error", "message": login_data.get("errorMessage")}), 401
 
         token = login_data["token"]
@@ -51,9 +54,11 @@ def health_check():
         validate_data = validate_resp.json()
 
         if not validate_data.get("success"):
+            print("❌ توکن نامعتبر")
             return jsonify({"status": "error", "message": "توکن نامعتبر است."}), 401
 
         cached_token = validate_data["newToken"]
+        print("✅ توکن جدید دریافت شد.")
 
         account_resp = requests.post(
             ACCOUNT_URL,
@@ -65,19 +70,27 @@ def health_check():
         accounts = acc_data.get("accounts", [])
         target = next((a for a in accounts if a.get("name", "").strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()), None)
         if not target:
+            print(f"❌ حساب '{TARGET_ACCOUNT_NAME}' یافت نشد.")
             return jsonify({"status": "error", "message": f"حساب '{TARGET_ACCOUNT_NAME}' یافت نشد."}), 404
 
         cached_account_id = target["id"]
+        print(f"✅ اتصال برقرار شد. accountId: {cached_account_id}")
         return jsonify({"status": "success", "accountId": cached_account_id})
 
     except Exception as e:
+        print("❌ خطای عمومی:", traceback.format_exc())
         return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
+    print("🚀 اجرای webhook")
+    print(f"توکن: {cached_token}")
+    print(f"حساب: {cached_account_id}")
+
     try:
         if not cached_token or not cached_account_id:
+            print("⚠️ ابتدا باید اتصال اولیه برقرار شود.")
             return jsonify({"status": "error", "message": "ابتدا اتصال اولیه از طریق GET / برقرار شود."}), 403
 
         data = request.get_json()
@@ -88,6 +101,7 @@ def webhook():
         qty = data.get("qty")
 
         if not all([symbol, side, qty]):
+            print("⚠️ پیام ناقص:", data)
             return jsonify({"status": "error", "message": "داده‌های ناقص."}), 400
 
         try:
@@ -100,8 +114,8 @@ def webhook():
             return jsonify({"status": "error", "message": f"نماد پشتیبانی نمی‌شود: {symbol}"}), 400
 
         contract_id = mapped["contractId"]
-
         side_clean = side.strip().lower()
+
         if side_clean in ["buy", "long", "close_short"]:
             side_code = 0
         elif side_clean in ["sell", "short", "close_long"]:
@@ -135,14 +149,24 @@ def webhook():
         try:
             order_data = order_resp.json()
         except Exception as e:
-            return jsonify({"status": "error", "message": "خطا در تبدیل پاسخ به JSON", "detail": str(e), "response": order_resp.text}), 500
+            return jsonify({
+                "status": "error",
+                "message": "خطا در تبدیل پاسخ به JSON",
+                "detail": str(e),
+                "response": order_resp.text
+            }), 500
 
         if order_data.get("success"):
             return jsonify({"status": "success", "orderId": order_data.get("orderId")})
         else:
-            return jsonify({"status": "error", "message": order_data.get("errorMessage", "خطای ناشناخته در سفارش")})
+            return jsonify({
+                "status": "error",
+                "message": order_data.get("errorMessage", "❌ خطای ناشناخته از سمت سرور"),
+                "full_response": order_data
+            })
 
     except Exception as e:
+        print("❌ خطای عمومی در webhook:", traceback.format_exc())
         return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
 
 if __name__ == "__main__":
