@@ -16,7 +16,7 @@ symbol_map = {
     "MNQ": "CON.F.US.MNQ.M5",
     "MGC": "CON.F.US.MGC.Q5",
     "GC": "CON.F.US.GCE.Q5",
-    "CL": "CON.F.US.CLE.N5",
+    "CL": "CON.F.US.CL.N5",
     "MCL": "CON.F.US.MCLE.N5",
     "NG": "CON.F.US.NGE.N5",
     "MNG": "CON.F.US.MNG.N5",
