@@ -4,14 +4,17 @@ import os
 
 app = Flask(__name__)
 
+# === اطلاعات لاگین از محیط (env) ===
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
 
+# === تنظیمات اتصال به TopstepX ===
 BASE_URL = "https://api.topstepx.com"
 cached_token = None
 cached_account_id = None
 
+# === نگاشت نمادها ===
 symbol_map = {
     "MNQ": "CON.F.US.MNQ.M25",
     "MGC": "CON.F.US.MGC.Q25",
@@ -26,6 +29,7 @@ symbol_map = {
     "MHG": "CON.F.US.MHG.N25"
 }
 
+# === مسیر تست اتصال ===
 @app.route("/", methods=["GET"])
 def initialize():
     global cached_token, cached_account_id
@@ -35,12 +39,12 @@ def initialize():
         if not login.get("success"): return jsonify({"error": login.get("errorMessage")}), 401
         token = login["token"]
 
-        # اعتبارسنجی
+        # اعتبارسنجی توکن
         validate = requests.post(f"{BASE_URL}/api/Auth/validate", headers={"Authorization": f"Bearer {token}"}).json()
         if not validate.get("success"): return jsonify({"error": "Invalid token"}), 401
         cached_token = validate["newToken"]
 
-        # دریافت حساب
+        # گرفتن لیست حساب‌ها
         accounts = requests.post(f"{BASE_URL}/api/Account/search",
             headers={"Authorization": f"Bearer {cached_token}"},
             json={"onlyActiveAccounts": True}
@@ -49,10 +53,11 @@ def initialize():
         if not match: return jsonify({"error": "Account not found"}), 404
 
         cached_account_id = match["id"]
-        return jsonify({"status": "success", "accountId": cached_account_id})
+        return jsonify({"status": "connected", "accountId": cached_account_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# === مسیر اجرای سیگنال‌های ترید از TradingView ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -61,20 +66,45 @@ def webhook():
 
     try:
         data = request.get_json()
+        print("Received:", data)
+
         symbol = data.get("symbol", "").upper()
         side = data.get("side", "").lower()
-        qty = int(data.get("qty", 0))
+        qty = int(data.get("qty", 0))  # فقط برای ورود لازم است
 
         contract_id = symbol_map.get(symbol)
         if not contract_id or side not in ["buy", "sell", "long", "short", "close_long", "close_short"]:
             return jsonify({"error": "Invalid symbol or side"}), 400
 
-        side_code = 0 if side in ["buy", "long", "close_short"] else 1
+        # === مدیریت سیگنال خروج ===
+        if side in ["close_long", "close_short"]:
+            pos_resp = requests.post(
+                f"{BASE_URL}/api/Position/search",
+                headers={"Authorization": f"Bearer {cached_token}"},
+                json={"accountId": cached_account_id}
+            )
+            positions = pos_resp.json().get("positions", [])
+            position = next((p for p in positions if p["contractId"] == contract_id), None)
+
+            if not position:
+                return jsonify({"status": "no_position_to_close", "message": "No open position to close"}), 200
+
+            qty = int(position.get("netSize", 0))
+            if qty == 0:
+                return jsonify({"status": "already_flat", "message": "Position already flat"}), 200
+
+            side_code = 1 if side == "close_long" else 0  # فروش برای بستن لانگ، خرید برای بستن شورت
+
+        # === مدیریت سیگنال ورود ===
+        else:
+            if qty <= 0:
+                return jsonify({"error": "Invalid qty"}), 400
+            side_code = 0 if side in ["buy", "long"] else 1
 
         payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
-            "type": 2,
+            "type": 2,  # Market order
             "side": side_code,
             "size": qty,
             "limitPrice": None,
@@ -99,5 +129,6 @@ def webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# === اجرای سرور ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
