@@ -4,17 +4,17 @@ import os
 
 app = Flask(__name__)
 
-# === اطلاعات لاگین از محیط (env) ===
+# === اطلاعات اتصال از متغیرهای محیطی ===
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
-
-# === تنظیمات اتصال به TopstepX ===
 BASE_URL = "https://api.topstepx.com"
+
+# === کش توکن و آیدی حساب ===
 cached_token = None
 cached_account_id = None
 
-# === نگاشت نمادها ===
+# === نگاشت نمادها به شناسه‌های قرارداد ===
 symbol_map = {
     "MNQ": "CON.F.US.MNQ.M25",
     "MGC": "CON.F.US.MGC.Q25",
@@ -29,35 +29,38 @@ symbol_map = {
     "MHG": "CON.F.US.MHG.N25"
 }
 
-# === مسیر تست اتصال ===
+# === تست اتصال و راه‌اندازی اولیه ===
 @app.route("/", methods=["GET"])
 def initialize():
     global cached_token, cached_account_id
     try:
-        # مرحله لاگین
         login = requests.post(f"{BASE_URL}/api/Auth/loginKey", json={"userName": USERNAME, "apiKey": API_KEY}).json()
-        if not login.get("success"): return jsonify({"error": login.get("errorMessage")}), 401
-        token = login["token"]
+        if not login.get("success"):
+            return jsonify({"error": login.get("errorMessage")}), 401
 
-        # اعتبارسنجی توکن
+        token = login["token"]
         validate = requests.post(f"{BASE_URL}/api/Auth/validate", headers={"Authorization": f"Bearer {token}"}).json()
-        if not validate.get("success"): return jsonify({"error": "Invalid token"}), 401
+        if not validate.get("success"):
+            return jsonify({"error": "Token validation failed"}), 401
+
         cached_token = validate["newToken"]
 
-        # گرفتن لیست حساب‌ها
-        accounts = requests.post(f"{BASE_URL}/api/Account/search",
+        acc_resp = requests.post(
+            f"{BASE_URL}/api/Account/search",
             headers={"Authorization": f"Bearer {cached_token}"},
             json={"onlyActiveAccounts": True}
-        ).json().get("accounts", [])
-        match = next((a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()), None)
-        if not match: return jsonify({"error": "Account not found"}), 404
+        ).json()
 
-        cached_account_id = match["id"]
+        account = next((a for a in acc_resp.get("accounts", []) if a["name"].lower() == TARGET_ACCOUNT_NAME.lower()), None)
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+
+        cached_account_id = account["id"]
         return jsonify({"status": "connected", "accountId": cached_account_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === مسیر اجرای سیگنال‌های ترید از TradingView ===
+# === دریافت سیگنال ترید از Pine Script ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -66,41 +69,54 @@ def webhook():
 
     try:
         data = request.get_json()
-        print("Received:", data)
+        print("Received webhook data:", data)
 
         symbol = data.get("symbol", "").upper()
         side = data.get("side", "").lower()
-        qty = int(data.get("qty", 0))  # فقط برای ورود لازم است
 
         contract_id = symbol_map.get(symbol)
         if not contract_id or side not in ["buy", "sell", "long", "short", "close_long", "close_short"]:
             return jsonify({"error": "Invalid symbol or side"}), 400
 
-        # === مدیریت سیگنال خروج ===
+        # === خروج از پوزیشن ===
         if side in ["close_long", "close_short"]:
             pos_resp = requests.post(
                 f"{BASE_URL}/api/Position/search",
                 headers={"Authorization": f"Bearer {cached_token}"},
                 json={"accountId": cached_account_id}
             )
-            positions = pos_resp.json().get("positions", [])
-            position = next((p for p in positions if p["contractId"] == contract_id), None)
 
+            if pos_resp.status_code != 200:
+                return jsonify({"error": "Failed to fetch positions", "detail": pos_resp.text}), 500
+
+            positions = pos_resp.json().get("positions", [])
+            print("Fetched positions:", positions)
+            print("Looking for contractId:", contract_id)
+
+            position = next((p for p in positions if p.get("contractId") == contract_id), None)
             if not position:
-                return jsonify({"status": "no_position_to_close", "message": "No open position to close"}), 200
+                return jsonify({
+                    "status": "no_position_to_close",
+                    "message": f"No open position found for {contract_id}"
+                }), 200
 
             qty = int(position.get("netSize", 0))
             if qty == 0:
-                return jsonify({"status": "already_flat", "message": "Position already flat"}), 200
+                return jsonify({
+                    "status": "already_flat",
+                    "message": f"Position for {contract_id} already closed"
+                }), 200
 
-            side_code = 1 if side == "close_long" else 0  # فروش برای بستن لانگ، خرید برای بستن شورت
+            side_code = 1 if side == "close_long" else 0
 
-        # === مدیریت سیگنال ورود ===
+        # === ورود به پوزیشن ===
         else:
+            qty = int(data.get("qty", 0))
             if qty <= 0:
-                return jsonify({"error": "Invalid qty"}), 400
+                return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if side in ["buy", "long"] else 1
 
+        # === ساخت سفارش مارکت ===
         payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
@@ -123,12 +139,12 @@ def webhook():
             return jsonify({
                 "status": "error",
                 "errorCode": out.get("errorCode"),
-                "message": out.get("errorMessage", "Server returned error")
+                "message": out.get("errorMessage", "Unknown server error")
             }), 400
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === اجرای سرور ===
+# === اجرای سرور فلاسک ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
