@@ -4,17 +4,16 @@ import os
 
 app = Flask(__name__)
 
-# === اطلاعات اتصال از متغیرهای محیطی ===
+# === اطلاعات لاگین از محیط (env) ===
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
 BASE_URL = "https://api.topstepx.com"
 
-# === کش توکن و آیدی حساب ===
 cached_token = None
 cached_account_id = None
 
-# === نگاشت نمادها به شناسه‌های قرارداد ===
+# === نگاشت نمادها ===
 symbol_map = {
     "MNQ": "CON.F.US.MNQ.M25",
     "MGC": "CON.F.US.MGC.Q25",
@@ -29,38 +28,53 @@ symbol_map = {
     "MHG": "CON.F.US.MHG.N25"
 }
 
-# === تست اتصال و راه‌اندازی اولیه ===
+# === مسیر تست اتصال ===
 @app.route("/", methods=["GET"])
 def initialize():
     global cached_token, cached_account_id
     try:
-        login = requests.post(f"{BASE_URL}/api/Auth/loginKey", json={"userName": USERNAME, "apiKey": API_KEY}).json()
+        # مرحله لاگین
+        login = requests.post(
+            f"{BASE_URL}/api/Auth/loginKey",
+            json={"userName": USERNAME, "apiKey": API_KEY}
+        ).json()
         if not login.get("success"):
             return jsonify({"error": login.get("errorMessage")}), 401
-
         token = login["token"]
-        validate = requests.post(f"{BASE_URL}/api/Auth/validate", headers={"Authorization": f"Bearer {token}"}).json()
+
+        # اعتبارسنجی توکن
+        validate = requests.post(
+            f"{BASE_URL}/api/Auth/validate",
+            headers={"Authorization": f"Bearer {token}"}
+        ).json()
         if not validate.get("success"):
             return jsonify({"error": "Token validation failed"}), 401
-
         cached_token = validate["newToken"]
 
-        acc_resp = requests.post(
+        # گرفتن لیست حساب‌ها
+        accounts_resp = requests.post(
             f"{BASE_URL}/api/Account/search",
             headers={"Authorization": f"Bearer {cached_token}"},
             json={"onlyActiveAccounts": True}
         ).json()
 
-        account = next((a for a in acc_resp.get("accounts", []) if a["name"].lower() == TARGET_ACCOUNT_NAME.lower()), None)
-        if not account:
+        accounts = accounts_resp.get("accounts", [])
+        print("Available accounts:", accounts)
+
+        # جستجوی دقیق حساب
+        match = next(
+            (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
+            None
+        )
+        if not match:
             return jsonify({"error": "Account not found"}), 404
 
-        cached_account_id = account["id"]
+        cached_account_id = match["id"]
         return jsonify({"status": "connected", "accountId": cached_account_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === دریافت سیگنال ترید از Pine Script ===
+# === مسیر اجرای سیگنال‌های ترید از Pine Script ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -145,6 +159,6 @@ def webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === اجرای سرور فلاسک ===
+# === اجرای سرور ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
