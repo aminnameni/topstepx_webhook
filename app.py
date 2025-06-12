@@ -1,10 +1,15 @@
 from flask import Flask, request, jsonify
 import requests
 import os
+import logging
 
 app = Flask(__name__)
 
-# === اطلاعات لاگین از محیط (env) ===
+# === لاگ‌گیری حرفه‌ای ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# === اطلاعات اتصال ===
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
@@ -28,12 +33,11 @@ symbol_map = {
     "MHG": "CON.F.US.MHG.N25"
 }
 
-# === مسیر تست اتصال ===
+# === اتصال اولیه و دریافت حساب ===
 @app.route("/", methods=["GET"])
 def initialize():
     global cached_token, cached_account_id
     try:
-        # مرحله لاگین
         login = requests.post(
             f"{BASE_URL}/api/Auth/loginKey",
             json={"userName": USERNAME, "apiKey": API_KEY}
@@ -42,7 +46,6 @@ def initialize():
             return jsonify({"error": login.get("errorMessage")}), 401
         token = login["token"]
 
-        # اعتبارسنجی توکن
         validate = requests.post(
             f"{BASE_URL}/api/Auth/validate",
             headers={"Authorization": f"Bearer {token}"}
@@ -51,7 +54,6 @@ def initialize():
             return jsonify({"error": "Token validation failed"}), 401
         cached_token = validate["newToken"]
 
-        # گرفتن لیست حساب‌ها
         accounts_resp = requests.post(
             f"{BASE_URL}/api/Account/search",
             headers={"Authorization": f"Bearer {cached_token}"},
@@ -59,9 +61,8 @@ def initialize():
         ).json()
 
         accounts = accounts_resp.get("accounts", [])
-        print("Available accounts:", accounts)
+        logger.info(f"Available accounts: {accounts}")
 
-        # جستجوی دقیق حساب
         match = next(
             (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
             None
@@ -70,11 +71,13 @@ def initialize():
             return jsonify({"error": "Account not found"}), 404
 
         cached_account_id = match["id"]
+        logger.info(f"Connected to account: {match['name']} (ID: {cached_account_id})")
         return jsonify({"status": "connected", "accountId": cached_account_id})
     except Exception as e:
+        logger.exception("Initialization failed")
         return jsonify({"error": str(e)}), 500
 
-# === مسیر اجرای سیگنال‌های ترید از Pine Script ===
+# === اجرای سیگنال ترید ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -83,7 +86,7 @@ def webhook():
 
     try:
         data = request.get_json()
-        print("Received webhook data:", data)
+        logger.info(f"Received webhook data: {data}")
 
         symbol = data.get("symbol", "").upper()
         side = data.get("side", "").lower()
@@ -101,17 +104,31 @@ def webhook():
             )
 
             if pos_resp.status_code != 200:
-                return jsonify({"error": "Failed to fetch positions", "detail": pos_resp.text}), 500
+                logger.error(f"Failed to fetch positions: {pos_resp.status_code}, {pos_resp.text}")
+                return jsonify({
+                    "error": "Failed to fetch positions",
+                    "status_code": pos_resp.status_code,
+                    "response": pos_resp.text
+                }), 500
 
-            positions = pos_resp.json().get("positions", [])
-            print("Fetched positions:", positions)
-            print("Looking for contractId:", contract_id)
+            try:
+                positions_data = pos_resp.json()
+            except Exception:
+                logger.exception("Failed to parse JSON from positions response")
+                return jsonify({"error": "Invalid JSON response", "raw": pos_resp.text}), 500
 
-            position = next((p for p in positions if p.get("contractId") == contract_id), None)
+            positions = positions_data.get("positions", [])
+            logger.info(f"Fetched positions: {positions}")
+            logger.info(f"Looking for contractId containing: {contract_id}")
+
+            # تطبیق منعطف contractId
+            position = next((p for p in positions if contract_id in p.get("contractId", "")), None)
+
             if not position:
                 return jsonify({
                     "status": "no_position_to_close",
-                    "message": f"No open position found for {contract_id}"
+                    "message": f"No open position found for symbol {symbol} (contractId fragment: {contract_id})",
+                    "available_contracts": [p.get("contractId") for p in positions]
                 }), 200
 
             qty = int(position.get("netSize", 0))
@@ -121,6 +138,7 @@ def webhook():
                     "message": f"Position for {contract_id} already closed"
                 }), 200
 
+            logger.info(f"Matched position: {position}")
             side_code = 1 if side == "close_long" else 0
 
         # === ورود به پوزیشن ===
@@ -130,7 +148,6 @@ def webhook():
                 return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if side in ["buy", "long"] else 1
 
-        # === ساخت سفارش مارکت ===
         payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
@@ -144,8 +161,14 @@ def webhook():
             "linkedOrderId": None
         }
 
-        resp = requests.post(f"{BASE_URL}/api/Order/place", json=payload, headers={"Authorization": f"Bearer {cached_token}"})
+        logger.info(f"Placing order with payload: {payload}")
+        resp = requests.post(
+            f"{BASE_URL}/api/Order/place",
+            json=payload,
+            headers={"Authorization": f"Bearer {cached_token}"}
+        )
         out = resp.json()
+        logger.info(f"Order response: {out}")
 
         if out.get("success"):
             return jsonify({"status": "success", "orderId": out.get("orderId")})
@@ -157,6 +180,7 @@ def webhook():
             }), 400
 
     except Exception as e:
+        logger.exception("Webhook processing failed")
         return jsonify({"error": str(e)}), 500
 
 # === اجرای سرور ===
