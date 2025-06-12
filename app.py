@@ -10,7 +10,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === اطلاعات اتصال ===
+# === اطلاعات اتصال از محیط ===
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
@@ -19,7 +19,7 @@ BASE_URL = "https://api.topstepx.com"
 cached_token = None
 cached_account_id = None
 
-# === نگاشت نمادها ===
+# === نگاشت نمادها به contractId ===
 symbol_map = {
     "MGC": "CON.F.US.MGC.Q25",
     "MNQ": "CON.F.US.MNQ.M25",
@@ -32,7 +32,7 @@ symbol_map = {
     "MHG": "CON.F.US.MHG.N25"
 }
 
-# === اتصال اولیه ===
+# === اتصال اولیه و ذخیره توکن و اکانت ===
 @app.route("/", methods=["GET"])
 def initialize():
     global cached_token, cached_account_id
@@ -74,7 +74,7 @@ def initialize():
         logger.exception("Initialization failed")
         return jsonify({"error": str(e)}), 500
 
-# === اجرای سیگنال ترید ===
+# === دریافت سیگنال ترید ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -90,7 +90,7 @@ def webhook():
         if not contract_id or side not in ["buy", "sell", "long", "short", "close_long", "close_short"]:
             return jsonify({"error": "Invalid symbol or side"}), 400
 
-        # === مدیریت سیگنال خروج ===
+        # === سیگنال خروج ===
         if side in ["close_long", "close_short"]:
             start_time = (datetime.utcnow() - timedelta(days=2)).isoformat() + "Z"
             order_resp = requests.post(
@@ -110,10 +110,14 @@ def webhook():
             orders = order_resp.json().get("orders", [])
             logger.info(f"Fetched {len(orders)} orders")
 
-            # فقط سفارش‌های پرشده و فعال روی همین نماد را بررسی کن
+            # 🔍 چاپ کامل سفارش‌ها
+            for idx, o in enumerate(orders):
+                logger.info(f"[Order {idx+1}] contractId={o.get('contractId')}, status={o.get('status')}, "
+                            f"side={o.get('side')}, qty={o.get('size')}, raw={o}")
+
             filled_orders = [
                 o for o in orders
-                if o.get("contractId") == contract_id and o.get("status") == "Filled"
+                if contract_id in o.get("contractId", "") and o.get("status") == "Filled"
             ]
 
             if not filled_orders:
@@ -126,14 +130,13 @@ def webhook():
             qty = int(last_order.get("size", 0))
             last_side = last_order.get("side")  # 0 = buy, 1 = sell
 
-            # بررسی تناسب جهت سفارش خروج
             if (last_side == 0 and side != "close_long") or (last_side == 1 and side != "close_short"):
                 return jsonify({
                     "status": "position_direction_mismatch",
                     "message": "Last order direction does not match exit signal"
                 }), 400
 
-            exit_side_code = 1 if last_side == 0 else 0  # reverse of entry
+            exit_side_code = 1 if last_side == 0 else 0
             payload = {
                 "accountId": cached_account_id,
                 "contractId": contract_id,
@@ -200,6 +203,6 @@ def webhook():
         logger.exception("Webhook processing failed")
         return jsonify({"error": str(e)}), 500
 
-# === اجرای سرور ===
+# === اجرای سرور Flask ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
