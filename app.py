@@ -16,10 +16,17 @@ cached_token = None
 cached_account_id = None
 
 symbol_map = {
-    "MGC": "CON.F.US.MGC.Q25",
     "MNQ": "CON.F.US.MNQ.M25",
+    "MGC": "CON.F.US.MGC.Q25",
+    "GC": "CON.F.US.GCE.Q25",
     "CL": "CON.F.US.CL.N25",
-    # Add others as needed
+    "MCL": "CON.F.US.MCLE.N25",
+    "NG": "CON.F.US.NGE.N25",
+    "MNG": "CON.F.US.MNG.N25",
+    "YM": "CON.F.US.YM.M25",
+    "MYM": "CON.F.US.MYM.M25",
+    "HG": "CON.F.US.CPE.N25",
+    "MHG": "CON.F.US.MHG.N25"
 }
 
 @app.route("/", methods=["GET"])
@@ -68,10 +75,11 @@ def webhook():
         qty = int(data.get("qty", 0))
 
         contract_id = symbol_map.get(symbol)
-        if not contract_id or side not in ["buy", "sell", "close_long", "close_short"]:
+        if not contract_id or side not in ["buy", "sell", "close", "close_long", "close_short"]:
             return jsonify({"error": "Invalid symbol or side"}), 400
 
-        if side in ["close_long", "close_short"]:
+        # Handle close signals with position lookup
+        if side.startswith("close"):
             now = datetime.datetime.utcnow()
             start_ts = (now - datetime.timedelta(hours=12)).isoformat() + "Z"
             end_ts = now.isoformat() + "Z"
@@ -96,7 +104,9 @@ def webhook():
             if qty == 0:
                 return jsonify({"message": "Position already flat", "status": "already_flat"}), 200
 
-            side_code = 1 if side == "close_long" else 0
+            side_code = 1 if last_order["side"] == 0 else 0  # reverse of entry side
+            side = "close"
+
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid qty"}), 400
@@ -118,7 +128,7 @@ def webhook():
         logging.info(f"Placing order: {payload}")
         order_resp = requests.post(f"{BASE_URL}/api/Order/place", json=payload, headers={"Authorization": f"Bearer {cached_token}"})
         out = order_resp.json()
-        logging.info(f"Exit order response: {out}")
+        logging.info(f"Order response: {out}")
 
         if out.get("success"):
             return jsonify({"status": "success", "orderId": out.get("orderId")})
