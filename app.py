@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import logging
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -20,20 +21,18 @@ cached_account_id = None
 
 # === نگاشت نمادها ===
 symbol_map = {
-    "MNQ": "CON.F.US.MNQ.M25",
     "MGC": "CON.F.US.MGC.Q25",
-    "GC": "CON.F.US.GCE.Q25",
-    "CL": "CON.F.US.CL.N25",
+    "MNQ": "CON.F.US.MNQ.M25",
+    "GC":  "CON.F.US.GCE.Q25",
+    "CL":  "CON.F.US.CL.N25",
     "MCL": "CON.F.US.MCLE.N25",
-    "NG": "CON.F.US.NGE.N25",
-    "MNG": "CON.F.US.MNG.N25",
-    "YM": "CON.F.US.YM.M25",
+    "YM":  "CON.F.US.YM.M25",
     "MYM": "CON.F.US.MYM.M25",
-    "HG": "CON.F.US.CPE.N25",
+    "HG":  "CON.F.US.CPE.N25",
     "MHG": "CON.F.US.MHG.N25"
 }
 
-# === اتصال اولیه و دریافت حساب ===
+# === اتصال اولیه ===
 @app.route("/", methods=["GET"])
 def initialize():
     global cached_token, cached_account_id
@@ -61,8 +60,6 @@ def initialize():
         ).json()
 
         accounts = accounts_resp.get("accounts", [])
-        logger.info(f"Available accounts: {accounts}")
-
         match = next(
             (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
             None
@@ -86,8 +83,6 @@ def webhook():
 
     try:
         data = request.get_json()
-        logger.info(f"Received webhook data: {data}")
-
         symbol = data.get("symbol", "").upper()
         side = data.get("side", "").lower()
 
@@ -95,51 +90,76 @@ def webhook():
         if not contract_id or side not in ["buy", "sell", "long", "short", "close_long", "close_short"]:
             return jsonify({"error": "Invalid symbol or side"}), 400
 
-        # === خروج از پوزیشن ===
+        # === مدیریت سیگنال خروج ===
         if side in ["close_long", "close_short"]:
-            pos_resp = requests.post(
-                f"{BASE_URL}/api/Position/search",
+            start_time = (datetime.utcnow() - timedelta(days=2)).isoformat() + "Z"
+            order_resp = requests.post(
+                f"{BASE_URL}/api/Order/search",
                 headers={"Authorization": f"Bearer {cached_token}"},
-                json={"accountId": cached_account_id}
+                json={"accountId": cached_account_id, "startTimestamp": start_time}
             )
 
-            if pos_resp.status_code != 200:
-                logger.error(f"Failed to fetch positions: {pos_resp.status_code}, {pos_resp.text}")
+            if order_resp.status_code != 200:
+                logger.error(f"Failed to fetch orders: {order_resp.status_code}, {order_resp.text}")
                 return jsonify({
-                    "error": "Failed to fetch positions",
-                    "status_code": pos_resp.status_code,
-                    "response": pos_resp.text
+                    "error": "Failed to fetch orders",
+                    "status_code": order_resp.status_code,
+                    "response": order_resp.text
                 }), 500
 
-            try:
-                positions_data = pos_resp.json()
-            except Exception:
-                logger.exception("Failed to parse JSON from positions response")
-                return jsonify({"error": "Invalid JSON response", "raw": pos_resp.text}), 500
+            orders = order_resp.json().get("orders", [])
+            logger.info(f"Fetched {len(orders)} orders")
 
-            positions = positions_data.get("positions", [])
-            logger.info(f"Fetched positions: {positions}")
-            logger.info(f"Looking for contractId containing: {contract_id}")
+            # فقط سفارش‌های پرشده و فعال روی همین نماد را بررسی کن
+            filled_orders = [
+                o for o in orders
+                if o.get("contractId") == contract_id and o.get("status") == "Filled"
+            ]
 
-            # تطبیق منعطف contractId
-            position = next((p for p in positions if contract_id in p.get("contractId", "")), None)
-
-            if not position:
+            if not filled_orders:
                 return jsonify({
                     "status": "no_position_to_close",
-                    "message": f"No open position found for symbol {symbol} (contractId fragment: {contract_id})",
-                    "available_contracts": [p.get("contractId") for p in positions]
+                    "message": f"No filled orders found for {contract_id}"
                 }), 200
 
-            qty = int(position.get("netSize", 0))
-            if qty == 0:
+            last_order = filled_orders[-1]
+            qty = int(last_order.get("size", 0))
+            last_side = last_order.get("side")  # 0 = buy, 1 = sell
+
+            # بررسی تناسب جهت سفارش خروج
+            if (last_side == 0 and side != "close_long") or (last_side == 1 and side != "close_short"):
                 return jsonify({
-                    "status": "already_flat",
-                    "message": f"Position for {contract_id} already closed"
-                }), 200
+                    "status": "position_direction_mismatch",
+                    "message": "Last order direction does not match exit signal"
+                }), 400
 
-            logger.info(f"Matched position: {position}")
-            side_code = 1 if side == "close_long" else 0
+            exit_side_code = 1 if last_side == 0 else 0  # reverse of entry
+            payload = {
+                "accountId": cached_account_id,
+                "contractId": contract_id,
+                "type": 2,
+                "side": exit_side_code,
+                "size": qty,
+                "limitPrice": None,
+                "stopPrice": None,
+                "trailPrice": None,
+                "customTag": side,
+                "linkedOrderId": None
+            }
+
+            resp = requests.post(f"{BASE_URL}/api/Order/place", json=payload,
+                                 headers={"Authorization": f"Bearer {cached_token}"})
+            out = resp.json()
+            logger.info(f"Exit order response: {out}")
+
+            if out.get("success"):
+                return jsonify({"status": "success", "orderId": out.get("orderId")})
+            else:
+                return jsonify({
+                    "status": "error",
+                    "errorCode": out.get("errorCode"),
+                    "message": out.get("errorMessage", "Unknown server error")
+                }), 400
 
         # === ورود به پوزیشن ===
         else:
@@ -148,36 +168,33 @@ def webhook():
                 return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if side in ["buy", "long"] else 1
 
-        payload = {
-            "accountId": cached_account_id,
-            "contractId": contract_id,
-            "type": 2,  # Market order
-            "side": side_code,
-            "size": qty,
-            "limitPrice": None,
-            "stopPrice": None,
-            "trailPrice": None,
-            "customTag": side,
-            "linkedOrderId": None
-        }
+            payload = {
+                "accountId": cached_account_id,
+                "contractId": contract_id,
+                "type": 2,
+                "side": side_code,
+                "size": qty,
+                "limitPrice": None,
+                "stopPrice": None,
+                "trailPrice": None,
+                "customTag": side,
+                "linkedOrderId": None
+            }
 
-        logger.info(f"Placing order with payload: {payload}")
-        resp = requests.post(
-            f"{BASE_URL}/api/Order/place",
-            json=payload,
-            headers={"Authorization": f"Bearer {cached_token}"}
-        )
-        out = resp.json()
-        logger.info(f"Order response: {out}")
+            logger.info(f"Placing entry order: {payload}")
+            resp = requests.post(f"{BASE_URL}/api/Order/place", json=payload,
+                                 headers={"Authorization": f"Bearer {cached_token}"})
+            out = resp.json()
+            logger.info(f"Entry order response: {out}")
 
-        if out.get("success"):
-            return jsonify({"status": "success", "orderId": out.get("orderId")})
-        else:
-            return jsonify({
-                "status": "error",
-                "errorCode": out.get("errorCode"),
-                "message": out.get("errorMessage", "Unknown server error")
-            }), 400
+            if out.get("success"):
+                return jsonify({"status": "success", "orderId": out.get("orderId")})
+            else:
+                return jsonify({
+                    "status": "error",
+                    "errorCode": out.get("errorCode"),
+                    "message": out.get("errorMessage", "Unknown server error")
+                }), 400
 
     except Exception as e:
         logger.exception("Webhook processing failed")
