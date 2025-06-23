@@ -16,15 +16,15 @@ cached_token = None
 cached_account_id = None
 
 symbol_map = {
-    "MNQ": "CON.F.US.MNQ.M25",
+    "MNQ": "CON.F.US.MNQ.U25",
     "MGC": "CON.F.US.MGC.Q25",
     "GC": "CON.F.US.GCE.Q25",
-    "CL": "CON.F.US.CL.N25",
-    "MCL": "CON.F.US.MCLE.N25",
+    "CL": "CON.F.US.CL.Q25",
+    "MCL": "CON.F.US.MCLE.Q25",
     "NG": "CON.F.US.NGE.N25",
     "MNG": "CON.F.US.MNG.N25",
-    "YM": "CON.F.US.YM.M25",
-    "MYM": "CON.F.US.MYM.M25",
+    "YM": "CON.F.US.YM.U25",
+    "MYM": "CON.F.US.MYM.U25",
     "HG": "CON.F.US.CPE.N25",
     "MHG": "CON.F.US.MHG.N25"
 }
