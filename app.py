@@ -49,8 +49,6 @@ cached_account_id = None
 def connect_topstep():
     global cached_token, cached_account_id
 
-    logging.info("Connecting to TopstepX...")
-
     login = requests.post(
         f"{BASE_URL}/api/Auth/loginKey",
         json={"userName": TOPSTEP_USER, "apiKey": TOPSTEP_KEY},
@@ -92,13 +90,33 @@ def connect_topstep():
     logging.info(f"Connected to account: {match['name']}")
 
 # ============================================================
-# BRACKET MARKET ORDER (NATIVE TOPSTEPX)
+# UTIL: CHECK OPEN POSITION
+# ============================================================
+def has_open_position(contract_id: str) -> bool:
+    """
+    بررسی می‌کند آیا برای این کانترکت پوزیشن باز وجود دارد یا نه
+    """
+    resp = requests.post(
+        f"{BASE_URL}/api/Order/search",
+        headers={"Authorization": f"Bearer {cached_token}"},
+        json={
+            "accountId": cached_account_id,
+            "onlyOpenOrders": True
+        },
+        timeout=10
+    ).json()
+
+    orders = resp.get("orders", [])
+    return any(o.get("contractId") == contract_id for o in orders)
+
+# ============================================================
+# MAIN: BRACKET MARKET ORDER
 # ============================================================
 def place_bracket_market_order(
     token: str,
     account_id: str,
     contract_id: str,
-    side: str,           # "buy" / "sell"
+    side: str,           # buy / sell
     quantity: int,
     entry_price: float,
     stop_price: float,
@@ -106,71 +124,74 @@ def place_bracket_market_order(
     tick_size: float,
 ) -> Dict[str, Any]:
 
-    # ---------- side ----------
-    if side.lower() == "buy":
-        side_val = 0   # LONG
-    elif side.lower() == "sell":
-        side_val = 1   # SHORT
-    else:
-        raise ValueError(f"Invalid side: {side}")
+    side_val = 0 if side == "buy" else 1
 
-    if quantity <= 0:
-        raise ValueError("quantity must be > 0")
+    sl_ticks = int(round((stop_price - entry_price) / tick_size))
+    tp_ticks = int(round((target_price - entry_price) / tick_size))
 
-    # ---------- tick offsets ----------
-    delta_sl = (stop_price   - entry_price) / tick_size
-    delta_tp = (target_price - entry_price) / tick_size
-
-    sl_ticks = int(round(delta_sl))
-    tp_ticks = int(round(delta_tp))
-
-    # ---------- validation ----------
     if side_val == 0:
-        # LONG
         if sl_ticks >= 0 or tp_ticks <= 0:
-            raise ValueError(f"[LONG] invalid ticks sl={sl_ticks}, tp={tp_ticks}")
+            raise ValueError("Invalid LONG bracket ticks")
     else:
-        # SHORT
         if sl_ticks <= 0 or tp_ticks >= 0:
-            raise ValueError(f"[SHORT] invalid ticks sl={sl_ticks}, tp={tp_ticks}")
-
-    logging.info(
-        "Bracket ticks OK | side=%s sl=%d tp=%d",
-        "LONG" if side_val == 0 else "SHORT",
-        sl_ticks,
-        tp_ticks
-    )
+            raise ValueError("Invalid SHORT bracket ticks")
 
     payload = {
         "accountId": account_id,
         "contractId": contract_id,
-        "type": 2,        # MARKET
+        "type": 2,  # MARKET
         "side": side_val,
         "size": quantity,
-        "stopLossBracket": {
-            "ticks": sl_ticks
-        },
-        "takeProfitBracket": {
-            "ticks": tp_ticks
-        },
-        "customTag": "TV_BRACKET"
-    }
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
+        "stopLossBracket": {"ticks": sl_ticks},
+        "takeProfitBracket": {"ticks": tp_ticks},
+        "customTag": "MAIN_BRACKET"
     }
 
     resp = requests.post(
         f"{BASE_URL}/api/Order/place",
-        headers=headers,
+        headers={"Authorization": f"Bearer {token}"},
         json=payload,
         timeout=10
     )
 
     result = resp.json()
     if not result.get("success"):
-        raise RuntimeError(f"Bracket order failed: {result}")
+        raise RuntimeError(f"MAIN order failed: {result}")
+
+    return result
+
+# ============================================================
+# SCALE: MARKET ONLY
+# ============================================================
+def place_scale_market_order(
+    token: str,
+    account_id: str,
+    contract_id: str,
+    side: str,
+    quantity: int,
+) -> Dict[str, Any]:
+
+    side_val = 0 if side == "buy" else 1
+
+    payload = {
+        "accountId": account_id,
+        "contractId": contract_id,
+        "type": 2,  # MARKET
+        "side": side_val,
+        "size": quantity,
+        "customTag": "SCALE_IN"
+    }
+
+    resp = requests.post(
+        f"{BASE_URL}/api/Order/place",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=10
+    )
+
+    result = resp.json()
+    if not result.get("success"):
+        raise RuntimeError(f"SCALE order failed: {result}")
 
     return result
 
@@ -188,50 +209,55 @@ def webhook():
     logging.info(f"Webhook received: {data}")
 
     symbol = data.get("symbol", "").upper()
-    side = data.get("side", "").lower()
-    quantity = int(data.get("quantity", 0))
-    entry_price = float(data.get("entry_price", 0))
+    action = data.get("action", "").lower()   # main | scale
+    side   = data.get("side", "").lower()     # buy | sell
+    qty    = int(data.get("quantity", 0))
+    entry  = float(data.get("entry_price", 0))
 
     if symbol not in SYMBOL_CONFIG:
-        return jsonify({"error": f"Unsupported symbol {symbol}"}), 400
+        return jsonify({"error": "Unsupported symbol"}), 400
 
     cfg = SYMBOL_CONFIG[symbol]
 
-    tick_size = cfg["tickSize"]
-    stop_ticks = cfg["stopTicks"]
-    tp_ticks   = cfg["tpTicks"]
+    if action == "main":
+        tick = cfg["tickSize"]
+        if side == "buy":
+            stop_price = entry - cfg["stopTicks"] * tick
+            tp_price   = entry + cfg["tpTicks"]   * tick
+        else:
+            stop_price = entry + cfg["stopTicks"] * tick
+            tp_price   = entry - cfg["tpTicks"]   * tick
 
-    if side == "buy":
-        stop_price = entry_price - stop_ticks * tick_size
-        target_price = entry_price + tp_ticks * tick_size
-    elif side == "sell":
-        stop_price = entry_price + stop_ticks * tick_size
-        target_price = entry_price - tp_ticks * tick_size
+        result = place_bracket_market_order(
+            token=cached_token,
+            account_id=cached_account_id,
+            contract_id=cfg["contractId"],
+            side=side,
+            quantity=qty,
+            entry_price=entry,
+            stop_price=stop_price,
+            target_price=tp_price,
+            tick_size=tick,
+        )
+
+        return jsonify({"status": "MAIN_OK", "order": result})
+
+    elif action == "scale":
+        if not has_open_position(cfg["contractId"]):
+            return jsonify({"status": "IGNORED", "reason": "No MAIN position"}), 200
+
+        result = place_scale_market_order(
+            token=cached_token,
+            account_id=cached_account_id,
+            contract_id=cfg["contractId"],
+            side=side,
+            quantity=qty,
+        )
+
+        return jsonify({"status": "SCALE_OK", "order": result})
+
     else:
-        return jsonify({"error": "Invalid side"}), 400
-
-    result = place_bracket_market_order(
-        token=cached_token,
-        account_id=cached_account_id,
-        contract_id=cfg["contractId"],
-        side=side,
-        quantity=quantity,
-        entry_price=entry_price,
-        stop_price=stop_price,
-        target_price=target_price,
-        tick_size=tick_size,
-    )
-
-    return jsonify({
-        "status": "BRACKET_MARKET_SENT",
-        "symbol": symbol,
-        "side": side,
-        "qty": quantity,
-        "entry": entry_price,
-        "stop": stop_price,
-        "target": target_price,
-        "order": result
-    })
+        return jsonify({"error": "Invalid action"}), 400
 
 # ============================================================
 # RUN
