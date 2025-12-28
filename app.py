@@ -1,163 +1,240 @@
 from flask import Flask, request, jsonify
 import requests
 import os
-import datetime
 import logging
+from typing import Dict, Any
 
+# ============================================================
+# APP
+# ============================================================
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# ================== ENV ==================
-USERNAME = os.getenv("TOPSTEP_USER")
-API_KEY = os.getenv("TOPSTEP_KEY")
-TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
+# ============================================================
+# TOPSTEPX CONFIG
+# ============================================================
 BASE_URL = "https://api.topstepx.com"
 
+TOPSTEP_USER = os.getenv("TOPSTEP_USER")
+TOPSTEP_KEY  = os.getenv("TOPSTEP_KEY")
+TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
+
+# ============================================================
+# SYMBOL CONFIG (per contract)
+# ============================================================
+SYMBOL_CONFIG = {
+    "MNQ": {
+        "contractId": "CON.F.US.MNQ.H26",
+        "tickSize": 0.25,
+        "stopTicks": 120,
+        "tpTicks": 180,
+    },
+    "MGC": {
+        "contractId": "CON.F.US.MGC.G26",
+        "tickSize": 0.10,
+        "stopTicks": 80,
+        "tpTicks": 120,
+    }
+}
+
+# ============================================================
+# CACHE
+# ============================================================
 cached_token = None
 cached_account_id = None
 
-# ================== SYMBOL MAP ==================
-symbol_map = {
-    "MNQ": "CON.F.US.MNQ.H26",
-    "MGC": "CON.F.US.MGC.G26",
-}
-
-# ================== CONNECT ==================
-@app.route("/", methods=["GET"])
-def connect():
+# ============================================================
+# AUTH
+# ============================================================
+def connect_topstep():
     global cached_token, cached_account_id
-    try:
-        login = requests.post(
-            f"{BASE_URL}/api/Auth/loginKey",
-            json={"userName": USERNAME, "apiKey": API_KEY}
-        ).json()
 
-        if not login.get("success"):
-            return jsonify({"error": login.get("errorMessage")}), 401
+    logging.info("Connecting to TopstepX...")
 
-        token = login["token"]
+    login = requests.post(
+        f"{BASE_URL}/api/Auth/loginKey",
+        json={"userName": TOPSTEP_USER, "apiKey": TOPSTEP_KEY},
+        timeout=10
+    ).json()
 
-        validate = requests.post(
-            f"{BASE_URL}/api/Auth/validate",
-            headers={"Authorization": f"Bearer {token}"}
-        ).json()
+    if not login.get("success"):
+        raise RuntimeError(f"Login failed: {login}")
 
-        if not validate.get("success"):
-            return jsonify({"error": "Token validation failed"}), 401
+    token = login["token"]
 
-        cached_token = validate["newToken"]
+    validate = requests.post(
+        f"{BASE_URL}/api/Auth/validate",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10
+    ).json()
 
-        accounts = requests.post(
-            f"{BASE_URL}/api/Account/search",
-            headers={"Authorization": f"Bearer {cached_token}"},
-            json={"onlyActiveAccounts": True}
-        ).json().get("accounts", [])
+    if not validate.get("success"):
+        raise RuntimeError("Token validation failed")
 
-        match = next(
-            (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
-            None
-        )
+    cached_token = validate["newToken"]
 
-        if not match:
-            return jsonify({"error": "Account not found"}), 404
+    accounts = requests.post(
+        f"{BASE_URL}/api/Account/search",
+        headers={"Authorization": f"Bearer {cached_token}"},
+        json={"onlyActiveAccounts": True},
+        timeout=10
+    ).json().get("accounts", [])
 
-        cached_account_id = match["id"]
-        logging.info(f"Connected to account: {match['name']}")
+    match = next(
+        (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
+        None
+    )
 
-        return jsonify({"status": "connected", "accountId": cached_account_id})
+    if not match:
+        raise RuntimeError("Target account not found")
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    cached_account_id = match["id"]
+    logging.info(f"Connected to account: {match['name']}")
 
-# ================== WEBHOOK ==================
+# ============================================================
+# BRACKET MARKET ORDER (NATIVE TOPSTEPX)
+# ============================================================
+def place_bracket_market_order(
+    token: str,
+    account_id: str,
+    contract_id: str,
+    side: str,           # "buy" / "sell"
+    quantity: int,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    tick_size: float,
+) -> Dict[str, Any]:
+
+    # ---------- side ----------
+    if side.lower() == "buy":
+        side_val = 0   # LONG
+    elif side.lower() == "sell":
+        side_val = 1   # SHORT
+    else:
+        raise ValueError(f"Invalid side: {side}")
+
+    if quantity <= 0:
+        raise ValueError("quantity must be > 0")
+
+    # ---------- tick offsets ----------
+    delta_sl = (stop_price   - entry_price) / tick_size
+    delta_tp = (target_price - entry_price) / tick_size
+
+    sl_ticks = int(round(delta_sl))
+    tp_ticks = int(round(delta_tp))
+
+    # ---------- validation ----------
+    if side_val == 0:
+        # LONG
+        if sl_ticks >= 0 or tp_ticks <= 0:
+            raise ValueError(f"[LONG] invalid ticks sl={sl_ticks}, tp={tp_ticks}")
+    else:
+        # SHORT
+        if sl_ticks <= 0 or tp_ticks >= 0:
+            raise ValueError(f"[SHORT] invalid ticks sl={sl_ticks}, tp={tp_ticks}")
+
+    logging.info(
+        "Bracket ticks OK | side=%s sl=%d tp=%d",
+        "LONG" if side_val == 0 else "SHORT",
+        sl_ticks,
+        tp_ticks
+    )
+
+    payload = {
+        "accountId": account_id,
+        "contractId": contract_id,
+        "type": 2,        # MARKET
+        "side": side_val,
+        "size": quantity,
+        "stopLossBracket": {
+            "ticks": sl_ticks
+        },
+        "takeProfitBracket": {
+            "ticks": tp_ticks
+        },
+        "customTag": "TV_BRACKET"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    resp = requests.post(
+        f"{BASE_URL}/api/Order/place",
+        headers=headers,
+        json=payload,
+        timeout=10
+    )
+
+    result = resp.json()
+    if not result.get("success"):
+        raise RuntimeError(f"Bracket order failed: {result}")
+
+    return result
+
+# ============================================================
+# WEBHOOK
+# ============================================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
 
     if not cached_token or not cached_account_id:
-        return jsonify({"error": "Not connected. Call GET / first."}), 403
+        connect_topstep()
 
-    try:
-        data = request.get_json(force=True)
-        logging.info(f"Webhook received: {data}")
+    data = request.get_json(force=True)
+    logging.info(f"Webhook received: {data}")
 
-        symbol = str(data.get("symbol", "")).upper()
-        action_raw = str(data.get("data", "")).lower()
-        qty = int(float(data.get("quantity", 0)))
+    symbol = data.get("symbol", "").upper()
+    side = data.get("side", "").lower()
+    quantity = int(data.get("quantity", 0))
+    entry_price = float(data.get("entry_price", 0))
 
-        contract_id = symbol_map.get(symbol)
-        if not contract_id:
-            return jsonify({"error": f"Unknown symbol: {symbol}"}), 400
+    if symbol not in SYMBOL_CONFIG:
+        return jsonify({"error": f"Unsupported symbol {symbol}"}), 400
 
-        action_map = {
-            "buy": "buy",
-            "sell": "sell",
-            "close": "close",
-            "exit": "close"
-        }
+    cfg = SYMBOL_CONFIG[symbol]
 
-        side = action_map.get(action_raw)
-        if not side:
-            return jsonify({"error": f"Invalid action: {action_raw}"}), 400
+    tick_size = cfg["tickSize"]
+    stop_ticks = cfg["stopTicks"]
+    tp_ticks   = cfg["tpTicks"]
 
-        # -------- CLOSE LOGIC --------
-        if side == "close":
-            now = datetime.datetime.utcnow()
-            start_ts = (now - datetime.timedelta(hours=12)).isoformat() + "Z"
-            end_ts = now.isoformat() + "Z"
+    if side == "buy":
+        stop_price = entry_price - stop_ticks * tick_size
+        target_price = entry_price + tp_ticks * tick_size
+    elif side == "sell":
+        stop_price = entry_price + stop_ticks * tick_size
+        target_price = entry_price - tp_ticks * tick_size
+    else:
+        return jsonify({"error": "Invalid side"}), 400
 
-            resp = requests.post(
-                f"{BASE_URL}/api/Order/search",
-                headers={"Authorization": f"Bearer {cached_token}"},
-                json={
-                    "accountId": cached_account_id,
-                    "startTimestamp": start_ts,
-                    "endTimestamp": end_ts
-                }
-            )
+    result = place_bracket_market_order(
+        token=cached_token,
+        account_id=cached_account_id,
+        contract_id=cfg["contractId"],
+        side=side,
+        quantity=quantity,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        target_price=target_price,
+        tick_size=tick_size,
+    )
 
-            orders = resp.json().get("orders", [])
-            active = [o for o in orders if o["contractId"] == contract_id and o["status"] in [1, 2]]
+    return jsonify({
+        "status": "BRACKET_MARKET_SENT",
+        "symbol": symbol,
+        "side": side,
+        "qty": quantity,
+        "entry": entry_price,
+        "stop": stop_price,
+        "target": target_price,
+        "order": result
+    })
 
-            if not active:
-                return jsonify({"status": "already_flat"}), 200
-
-            last = active[-1]
-            qty = int(last.get("size", 0))
-            side_code = 1 if last["side"] == 0 else 0
-
-        # -------- ENTRY LOGIC --------
-        else:
-            if qty <= 0:
-                return jsonify({"error": "Invalid quantity"}), 400
-            side_code = 0 if side == "buy" else 1
-
-        payload = {
-            "accountId": cached_account_id,
-            "contractId": contract_id,
-            "type": 2,  # Market Order
-            "side": side_code,
-            "size": qty,
-            "customTag": side
-        }
-
-        logging.info(f"Placing order: {payload}")
-
-        result = requests.post(
-            f"{BASE_URL}/api/Order/place",
-            headers={"Authorization": f"Bearer {cached_token}"},
-            json=payload
-        ).json()
-
-        if result.get("success"):
-            return jsonify({"status": "success", "orderId": result.get("orderId")})
-        else:
-            return jsonify({"status": "error", "details": result}), 400
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ================== RUN ==================
+# ============================================================
+# RUN
+# ============================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
