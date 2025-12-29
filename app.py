@@ -148,8 +148,10 @@ def webhook():
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
-
             side_code = 0 if action == "buy" else 1
+
+        # ===== ONLY CHANGE: UNIQUE customTag =====
+        unique_tag = f"{action}_{int(datetime.datetime.utcnow().timestamp())}"
 
         payload = {
             "accountId": cached_account_id,
@@ -157,8 +159,7 @@ def webhook():
             "type": 2,  # Market
             "side": side_code,
             "size": qty,
-            "customTag": f"{action}_{int(datetime.datetime.utcnow().timestamp())}"
-
+            "customTag": unique_tag
         }
 
         logging.info(f"Placing order payload: {payload}")
