@@ -4,6 +4,7 @@ import os
 import datetime
 import logging
 
+# ================== APP ==================
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -17,77 +18,94 @@ cached_token = None
 cached_account_id = None
 
 # ================== SYMBOL MAP ==================
-symbol_map = {
-    "MNQ": "CON.F.US.MNQ.H26",
+SYMBOL_MAP = {
     "MGC": "CON.F.US.MGC.G26",
+    "MNQ": "CON.F.US.MNQ.H26",
 }
 
-# ================== CONNECT ==================
-@app.route("/", methods=["GET"])
-def connect():
+# ================== UTILS ==================
+def normalize_symbol(raw_symbol: str) -> str:
+    raw_symbol = raw_symbol.upper()
+    if raw_symbol.startswith("MGC"):
+        return "MGC"
+    if raw_symbol.startswith("MNQ"):
+        return "MNQ"
+    return ""
+
+def connect_topstep():
     global cached_token, cached_account_id
+
+    logging.info("Connecting to TopstepX...")
+
+    login = requests.post(
+        f"{BASE_URL}/api/Auth/loginKey",
+        json={"userName": USERNAME, "apiKey": API_KEY}
+    ).json()
+
+    if not login.get("success"):
+        raise Exception(f"Login failed: {login}")
+
+    token = login["token"]
+
+    validate = requests.post(
+        f"{BASE_URL}/api/Auth/validate",
+        headers={"Authorization": f"Bearer {token}"}
+    ).json()
+
+    if not validate.get("success"):
+        raise Exception("Token validation failed")
+
+    cached_token = validate["newToken"]
+
+    accounts = requests.post(
+        f"{BASE_URL}/api/Account/search",
+        headers={"Authorization": f"Bearer {cached_token}"},
+        json={"onlyActiveAccounts": True}
+    ).json().get("accounts", [])
+
+    match = next(
+        (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
+        None
+    )
+
+    if not match:
+        raise Exception("Target account not found")
+
+    cached_account_id = match["id"]
+    logging.info(f"Connected to account: {match['name']}")
+
+# ================== ROUTES ==================
+@app.route("/", methods=["GET"])
+def health():
     try:
-        login = requests.post(
-            f"{BASE_URL}/api/Auth/loginKey",
-            json={"userName": USERNAME, "apiKey": API_KEY}
-        ).json()
-
-        if not login.get("success"):
-            return jsonify({"error": login.get("errorMessage")}), 401
-
-        token = login["token"]
-
-        validate = requests.post(
-            f"{BASE_URL}/api/Auth/validate",
-            headers={"Authorization": f"Bearer {token}"}
-        ).json()
-
-        if not validate.get("success"):
-            return jsonify({"error": "Token validation failed"}), 401
-
-        cached_token = validate["newToken"]
-
-        accounts = requests.post(
-            f"{BASE_URL}/api/Account/search",
-            headers={"Authorization": f"Bearer {cached_token}"},
-            json={"onlyActiveAccounts": True}
-        ).json().get("accounts", [])
-
-        match = next(
-            (a for a in accounts if a["name"].strip().lower() == TARGET_ACCOUNT_NAME.strip().lower()),
-            None
-        )
-
-        if not match:
-            return jsonify({"error": "Account not found"}), 404
-
-        cached_account_id = match["id"]
-        logging.info(f"Connected to account: {match['name']}")
-
+        connect_topstep()
         return jsonify({"status": "connected", "accountId": cached_account_id})
-
     except Exception as e:
+        logging.error(str(e))
         return jsonify({"error": str(e)}), 500
 
-# ================== WEBHOOK ==================
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
 
-    if not cached_token or not cached_account_id:
-        return jsonify({"error": "Not connected. Call GET / first."}), 403
-
     try:
+        # ---------- Ensure connection ----------
+        if not cached_token or not cached_account_id:
+            connect_topstep()
+
         data = request.get_json(force=True)
         logging.info(f"Webhook received: {data}")
 
-        symbol = str(data.get("symbol", "")).upper()
+        raw_symbol = str(data.get("symbol", ""))
         action_raw = str(data.get("data", "")).lower()
         qty = int(float(data.get("quantity", 0)))
 
-        contract_id = symbol_map.get(symbol)
-        if not contract_id:
-            return jsonify({"error": f"Unknown symbol: {symbol}"}), 400
+        symbol = normalize_symbol(raw_symbol)
+        if not symbol:
+            return jsonify({"error": f"Unsupported symbol: {raw_symbol}"}), 400
+
+        contract_id = SYMBOL_MAP[symbol]
 
         action_map = {
             "buy": "buy",
@@ -96,65 +114,70 @@ def webhook():
             "exit": "close"
         }
 
-        side = action_map.get(action_raw)
-        if not side:
+        action = action_map.get(action_raw)
+        if not action:
             return jsonify({"error": f"Invalid action: {action_raw}"}), 400
 
-        # -------- CLOSE LOGIC --------
-        if side == "close":
+        # ---------- CLOSE ----------
+        if action == "close":
             now = datetime.datetime.utcnow()
-            start_ts = (now - datetime.timedelta(hours=12)).isoformat() + "Z"
-            end_ts = now.isoformat() + "Z"
+            start = (now - datetime.timedelta(hours=12)).isoformat() + "Z"
+            end = now.isoformat() + "Z"
 
             resp = requests.post(
                 f"{BASE_URL}/api/Order/search",
                 headers={"Authorization": f"Bearer {cached_token}"},
                 json={
                     "accountId": cached_account_id,
-                    "startTimestamp": start_ts,
-                    "endTimestamp": end_ts
+                    "startTimestamp": start,
+                    "endTimestamp": end
                 }
-            )
+            ).json()
 
-            orders = resp.json().get("orders", [])
+            orders = resp.get("orders", [])
             active = [o for o in orders if o["contractId"] == contract_id and o["status"] in [1, 2]]
 
             if not active:
                 return jsonify({"status": "already_flat"}), 200
 
             last = active[-1]
-            qty = int(last.get("size", 0))
+            qty = int(last["size"])
             side_code = 1 if last["side"] == 0 else 0
 
-        # -------- ENTRY LOGIC --------
+        # ---------- ENTRY ----------
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
-            side_code = 0 if side == "buy" else 1
+
+            side_code = 0 if action == "buy" else 1
 
         payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
-            "type": 2,  # Market Order
+            "type": 2,  # Market
             "side": side_code,
             "size": qty,
-            "customTag": side
+            "customTag": action
         }
 
-        logging.info(f"Placing order: {payload}")
+        logging.info(f"Placing order payload: {payload}")
 
-        result = requests.post(
+        r = requests.post(
             f"{BASE_URL}/api/Order/place",
             headers={"Authorization": f"Bearer {cached_token}"},
             json=payload
-        ).json()
+        )
 
+        logging.info(f"TopstepX response: {r.status_code} {r.text}")
+
+        result = r.json()
         if result.get("success"):
             return jsonify({"status": "success", "orderId": result.get("orderId")})
         else:
             return jsonify({"status": "error", "details": result}), 400
 
     except Exception as e:
+        logging.exception("Webhook error")
         return jsonify({"error": str(e)}), 500
 
 
