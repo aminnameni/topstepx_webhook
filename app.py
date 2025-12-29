@@ -157,7 +157,8 @@ def webhook():
             "type": 2,  # Market
             "side": side_code,
             "size": qty,
-            "customTag": action
+            "customTag": f"{action}_{int(datetime.datetime.utcnow().timestamp())}"
+
         }
 
         logging.info(f"Placing order payload: {payload}")
