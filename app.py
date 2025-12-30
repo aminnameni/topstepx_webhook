@@ -3,6 +3,7 @@ import requests
 import os
 import datetime
 import logging
+import uuid
 
 # ================== APP ==================
 app = Flask(__name__)
@@ -150,8 +151,12 @@ def webhook():
                 return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if action == "buy" else 1
 
-        # ===== ONLY CHANGE: UNIQUE customTag =====
-        unique_tag = f"{action}_{int(datetime.datetime.utcnow().timestamp())}"
+        # ================== FIX: REAL UNIQUE customTag ==================
+        unique_tag = (
+            f"{action}_"
+            f"{int(datetime.datetime.utcnow().timestamp() * 1000)}_"
+            f"{uuid.uuid4().hex[:6]}"
+        )
 
         payload = {
             "accountId": cached_account_id,
