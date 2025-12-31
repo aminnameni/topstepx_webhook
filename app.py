@@ -217,6 +217,11 @@ def webhook():
 # ================== TELEGRAM WEBHOOK ==================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
+    global cached_token, cached_account_id
+
+    if not cached_token or not cached_account_id:
+        connect_topstep()
+
     data = request.get_json()
     msg = data.get("message", {})
     text = msg.get("text", "")
