@@ -82,6 +82,9 @@ def connect_topstep():
         headers={"Authorization": f"Bearer {login['token']}"}
     ).json()
 
+    if not validate.get("success"):
+        raise Exception("Token validation failed")
+
     cached_token = validate["newToken"]
 
     accounts = requests.post(
@@ -100,16 +103,15 @@ def connect_topstep():
 
     cached_account_id = match["id"]
 
-# ================== ROUTES ==================
+# ================== HEALTH ==================
 @app.route("/", methods=["GET"])
 def health():
     connect_topstep()
     return jsonify({"status": "connected", "accountId": cached_account_id})
 
-
 # ================== TRADINGVIEW WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
-def webhook():
+def tradingview_webhook():
     global cached_token, cached_account_id
 
     try:
@@ -126,8 +128,6 @@ def webhook():
         symbol = normalize_symbol(raw_symbol)
         if not symbol:
             return jsonify({"error": "Unsupported symbol"}), 400
-
-        contract_id = SYMBOL_MAP[symbol]
 
         action_map = {
             "buy": "buy",
@@ -158,19 +158,16 @@ def webhook():
                 }
             ).json()
 
-            active = [
-                o for o in resp.get("orders", [])
-                if o["contractId"] == contract_id and o["status"] in [1, 2]
-            ]
-
-            if not active:
+            orders = resp.get("orders", [])
+            if not orders:
                 tg_send(TG_CHAT_ID, "ℹ️ Already flat")
                 return jsonify({"status": "already_flat"}), 200
 
-            last = active[-1]
+            last = orders[-1]
             qty = int(last["size"])
             side_code = 1 if last["side"] == 0 else 0
 
+        # ---------- ENTRY ----------
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
@@ -180,7 +177,7 @@ def webhook():
 
         payload = {
             "accountId": cached_account_id,
-            "contractId": contract_id,
+            "contractId": SYMBOL_MAP[symbol],
             "type": 2,
             "side": side_code,
             "size": qty,
@@ -213,7 +210,6 @@ def webhook():
         tg_send(TG_CHAT_ID, f"🔥 SYSTEM ERROR\n{str(e)}")
         return jsonify({"error": str(e)}), 500
 
-
 # ================== TELEGRAM WEBHOOK ==================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -234,17 +230,24 @@ def telegram_webhook():
         tg_menu(chat_id)
 
     elif text == "💰 Balance":
-        accs = requests.post(
-            f"{BASE_URL}/api/Account/search",
-            headers={"Authorization": f"Bearer {cached_token}"},
-            json={"onlyActiveAccounts": True}
-        ).json()["accounts"]
+        try:
+            accs = requests.post(
+                f"{BASE_URL}/api/Account/search",
+                headers={"Authorization": f"Bearer {cached_token}"},
+                json={"onlyActiveAccounts": True}
+            ).json()["accounts"]
 
-        acc = next(a for a in accs if a["id"] == cached_account_id)
-        tg_send(
-            chat_id,
-            f"💰 Balance\nBalance: {acc['balance']}\nEquity: {acc['equity']}\nDay PnL: {acc['dayProfitLoss']}"
-        )
+            acc = next(a for a in accs if a["id"] == cached_account_id)
+
+            tg_send(
+                chat_id,
+                f"💰 Balance\n"
+                f"Balance: {acc['balance']}\n"
+                f"Equity: {acc['equity']}\n"
+                f"Day PnL: {acc['dayProfitLoss']}"
+            )
+        except Exception as e:
+            tg_send(chat_id, f"❌ Balance error\n{str(e)}")
 
     elif text == "📊 Positions":
         now = datetime.datetime.utcnow()
@@ -258,27 +261,28 @@ def telegram_webhook():
             }
         ).json()
 
-        active = [o for o in resp.get("orders", []) if o["status"] in [1, 2]]
+        orders = resp.get("orders", [])
 
-        if not active:
+        if not orders:
             tg_send(chat_id, "📭 No open positions")
         else:
-            msg = "📊 Open Positions:\n"
-            for o in active:
-                msg += f"- {o['contractId']} | Qty: {o['size']}\n"
-            tg_send(chat_id, msg)
+            msg_txt = "📊 Orders / Positions:\n"
+            for o in orders:
+                msg_txt += f"- {o['contractId']} | Qty: {o['size']} | Status: {o['status']}\n"
+            tg_send(chat_id, msg_txt)
 
     elif text == "🟢 Status":
         tg_send(
             chat_id,
-            f"🟢 SYSTEM STATUS\nToken: {'OK' if cached_token else '❌'}\nAccountID: {cached_account_id}"
+            f"🟢 SYSTEM STATUS\n"
+            f"Token: {'OK' if cached_token else '❌'}\n"
+            f"AccountID: {cached_account_id}"
         )
 
     else:
         tg_send(chat_id, "❓ Unknown command\n/menu")
 
     return "ok"
-
 
 # ================== RUN ==================
 if __name__ == "__main__":
