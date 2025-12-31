@@ -28,18 +28,34 @@ SYMBOL_MAP = {
     "MNQ": "CON.F.US.MNQ.H26",
 }
 
-# ================== TELEGRAM ==================
-def send_telegram(message: str):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+# ================== TELEGRAM CORE ==================
+def tg_send(chat_id, text, keyboard=None):
+    if not TG_BOT_TOKEN or not chat_id:
         return
+    payload = {"chat_id": chat_id, "text": text}
+    if keyboard:
+        payload["reply_markup"] = keyboard
     try:
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TG_CHAT_ID,
-            "text": message
-        }, timeout=5)
+        requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json=payload,
+            timeout=5
+        )
     except Exception as e:
         logging.error(f"Telegram error: {e}")
+
+def tg_menu(chat_id):
+    tg_send(
+        chat_id,
+        "🎛️ Trading Control Panel",
+        {
+            "keyboard": [
+                ["💰 Balance", "📊 Positions"],
+                ["🟢 Status"]
+            ],
+            "resize_keyboard": True
+        }
+    )
 
 # ================== UTILS ==================
 def normalize_symbol(raw_symbol: str) -> str:
@@ -66,9 +82,6 @@ def connect_topstep():
         headers={"Authorization": f"Bearer {login['token']}"}
     ).json()
 
-    if not validate.get("success"):
-        raise Exception("Token validation failed")
-
     cached_token = validate["newToken"]
 
     accounts = requests.post(
@@ -90,13 +103,11 @@ def connect_topstep():
 # ================== ROUTES ==================
 @app.route("/", methods=["GET"])
 def health():
-    try:
-        connect_topstep()
-        return jsonify({"status": "connected", "accountId": cached_account_id})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    connect_topstep()
+    return jsonify({"status": "connected", "accountId": cached_account_id})
 
 
+# ================== TRADINGVIEW WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global cached_token, cached_account_id
@@ -129,53 +140,43 @@ def webhook():
         if not action:
             return jsonify({"error": "Invalid action"}), 400
 
-        # ===== TELEGRAM: SIGNAL RECEIVED =====
-        send_telegram(
-            f"📩 SIGNAL RECEIVED\n"
-            f"Symbol: {symbol}\n"
-            f"Action: {action.upper()}\n"
-            f"Qty: {qty}"
+        tg_send(
+            TG_CHAT_ID,
+            f"📩 SIGNAL RECEIVED\nSymbol: {symbol}\nAction: {action.upper()}\nQty: {qty}"
         )
 
         # ---------- CLOSE ----------
         if action == "close":
             now = datetime.datetime.utcnow()
-            start = (now - datetime.timedelta(hours=12)).isoformat() + "Z"
-            end = now.isoformat() + "Z"
-
             resp = requests.post(
                 f"{BASE_URL}/api/Order/search",
                 headers={"Authorization": f"Bearer {cached_token}"},
                 json={
                     "accountId": cached_account_id,
-                    "startTimestamp": start,
-                    "endTimestamp": end
+                    "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat()+"Z",
+                    "endTimestamp": now.isoformat()+"Z"
                 }
             ).json()
 
-            orders = resp.get("orders", [])
-            active = [o for o in orders if o["contractId"] == contract_id and o["status"] in [1, 2]]
+            active = [
+                o for o in resp.get("orders", [])
+                if o["contractId"] == contract_id and o["status"] in [1, 2]
+            ]
 
             if not active:
-                send_telegram("ℹ️ Already flat")
+                tg_send(TG_CHAT_ID, "ℹ️ Already flat")
                 return jsonify({"status": "already_flat"}), 200
 
             last = active[-1]
             qty = int(last["size"])
             side_code = 1 if last["side"] == 0 else 0
 
-        # ---------- ENTRY ----------
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if action == "buy" else 1
 
-        # ===== UNIQUE customTag =====
-        custom_tag = (
-            f"{action}_"
-            f"{int(datetime.datetime.utcnow().timestamp() * 1000)}_"
-            f"{uuid.uuid4().hex[:6]}"
-        )
+        custom_tag = f"{action}_{int(datetime.datetime.utcnow().timestamp()*1000)}_{uuid.uuid4().hex[:6]}"
 
         payload = {
             "accountId": cached_account_id,
@@ -186,40 +187,92 @@ def webhook():
             "customTag": custom_tag
         }
 
-        send_telegram(
-            f"🚀 ORDER SENDING\n"
-            f"{symbol} {action.upper()} x{qty}\n"
-            f"Tag: {custom_tag}"
+        tg_send(
+            TG_CHAT_ID,
+            f"🚀 ORDER SENDING\n{symbol} {action.upper()} x{qty}\nTag: {custom_tag}"
         )
 
         r = requests.post(
             f"{BASE_URL}/api/Order/place",
             headers={"Authorization": f"Bearer {cached_token}"},
             json=payload
-        )
+        ).json()
 
-        result = r.json()
-
-        if result.get("success"):
-            send_telegram(
-                f"✅ ORDER SUCCESS\n"
-                f"{symbol} {action.upper()} x{qty}\n"
-                f"OrderID: {result.get('orderId')}"
+        if r.get("success"):
+            tg_send(
+                TG_CHAT_ID,
+                f"✅ ORDER SUCCESS\n{symbol} {action.upper()} x{qty}\nOrderID: {r.get('orderId')}"
             )
-            return jsonify({"status": "success", "orderId": result.get("orderId")})
+            return jsonify({"status": "success"})
 
-        else:
-            send_telegram(
-                f"❌ ORDER FAILED\n"
-                f"{symbol} {action.upper()} x{qty}\n"
-                f"Error: {result}"
-            )
-            return jsonify({"status": "error", "details": result}), 400
+        tg_send(TG_CHAT_ID, f"❌ ORDER FAILED\n{r}")
+        return jsonify(r), 400
 
     except Exception as e:
         logging.exception("Webhook error")
-        send_telegram(f"🔥 SYSTEM ERROR\n{str(e)}")
+        tg_send(TG_CHAT_ID, f"🔥 SYSTEM ERROR\n{str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+# ================== TELEGRAM WEBHOOK ==================
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
+    data = request.get_json()
+    msg = data.get("message", {})
+    text = msg.get("text", "")
+    chat_id = msg.get("chat", {}).get("id")
+
+    if not chat_id:
+        return "ok"
+
+    if text == "/menu":
+        tg_menu(chat_id)
+
+    elif text == "💰 Balance":
+        accs = requests.post(
+            f"{BASE_URL}/api/Account/search",
+            headers={"Authorization": f"Bearer {cached_token}"},
+            json={"onlyActiveAccounts": True}
+        ).json()["accounts"]
+
+        acc = next(a for a in accs if a["id"] == cached_account_id)
+        tg_send(
+            chat_id,
+            f"💰 Balance\nBalance: {acc['balance']}\nEquity: {acc['equity']}\nDay PnL: {acc['dayProfitLoss']}"
+        )
+
+    elif text == "📊 Positions":
+        now = datetime.datetime.utcnow()
+        resp = requests.post(
+            f"{BASE_URL}/api/Order/search",
+            headers={"Authorization": f"Bearer {cached_token}"},
+            json={
+                "accountId": cached_account_id,
+                "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat()+"Z",
+                "endTimestamp": now.isoformat()+"Z"
+            }
+        ).json()
+
+        active = [o for o in resp.get("orders", []) if o["status"] in [1, 2]]
+
+        if not active:
+            tg_send(chat_id, "📭 No open positions")
+        else:
+            msg = "📊 Open Positions:\n"
+            for o in active:
+                msg += f"- {o['contractId']} | Qty: {o['size']}\n"
+            tg_send(chat_id, msg)
+
+    elif text == "🟢 Status":
+        tg_send(
+            chat_id,
+            f"🟢 SYSTEM STATUS\nToken: {'OK' if cached_token else '❌'}\nAccountID: {cached_account_id}"
+        )
+
+    else:
+        tg_send(chat_id, "❓ Unknown command\n/menu")
+
+    return "ok"
 
 
 # ================== RUN ==================
