@@ -28,7 +28,7 @@ SYMBOL_MAP = {
     "MNQ": "CON.F.US.MNQ.H26",
 }
 
-# ================== TELEGRAM CORE ==================
+# ================== TELEGRAM ==================
 def tg_send(chat_id, text, keyboard=None):
     if not TG_BOT_TOKEN or not chat_id:
         return
@@ -58,11 +58,11 @@ def tg_menu(chat_id):
     )
 
 # ================== UTILS ==================
-def normalize_symbol(raw_symbol: str) -> str:
-    raw_symbol = raw_symbol.upper()
-    if raw_symbol.startswith("MGC"):
+def normalize_symbol(raw: str) -> str:
+    raw = raw.upper()
+    if raw.startswith("MGC"):
         return "MGC"
-    if raw_symbol.startswith("MNQ"):
+    if raw.startswith("MNQ"):
         return "MNQ"
     return ""
 
@@ -145,7 +145,6 @@ def tradingview_webhook():
             f"📩 SIGNAL RECEIVED\nSymbol: {symbol}\nAction: {action.upper()}\nQty: {qty}"
         )
 
-        # ---------- CLOSE ----------
         if action == "close":
             now = datetime.datetime.utcnow()
             resp = requests.post(
@@ -166,8 +165,6 @@ def tradingview_webhook():
             last = orders[-1]
             qty = int(last["size"])
             side_code = 1 if last["side"] == 0 else 0
-
-        # ---------- ENTRY ----------
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
@@ -239,12 +236,20 @@ def telegram_webhook():
 
             acc = next(a for a in accs if a["id"] == cached_account_id)
 
+            balance = acc.get("balance", "N/A")
+            cash = acc.get("cashBalance", "N/A")
+            open_pnl = acc.get("openProfitLoss", 0)
+            day_pnl = acc.get("dayProfitLoss", "N/A")
+
+            equity = cash + open_pnl if isinstance(cash, (int, float)) else "N/A"
+
             tg_send(
                 chat_id,
-                f"💰 Balance\n"
-                f"Balance: {acc['balance']}\n"
-                f"Equity: {acc['equity']}\n"
-                f"Day PnL: {acc['dayProfitLoss']}"
+                f"💰 Account Balance\n"
+                f"Balance: {balance}\n"
+                f"Cash: {cash}\n"
+                f"Equity: {equity}\n"
+                f"Day PnL: {day_pnl}"
             )
         except Exception as e:
             tg_send(chat_id, f"❌ Balance error\n{str(e)}")
