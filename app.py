@@ -13,6 +13,10 @@ logging.basicConfig(level=logging.INFO)
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
 TARGET_ACCOUNT_NAME = os.getenv("TARGET_ACCOUNT")
+
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
+
 BASE_URL = "https://api.topstepx.com"
 
 cached_token = None
@@ -23,6 +27,19 @@ SYMBOL_MAP = {
     "MGC": "CON.F.US.MGC.G26",
     "MNQ": "CON.F.US.MNQ.H26",
 }
+
+# ================== TELEGRAM ==================
+def send_telegram(message: str):
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={
+            "chat_id": TG_CHAT_ID,
+            "text": message
+        }, timeout=5)
+    except Exception as e:
+        logging.error(f"Telegram error: {e}")
 
 # ================== UTILS ==================
 def normalize_symbol(raw_symbol: str) -> str:
@@ -36,8 +53,6 @@ def normalize_symbol(raw_symbol: str) -> str:
 def connect_topstep():
     global cached_token, cached_account_id
 
-    logging.info("Connecting to TopstepX...")
-
     login = requests.post(
         f"{BASE_URL}/api/Auth/loginKey",
         json={"userName": USERNAME, "apiKey": API_KEY}
@@ -46,11 +61,9 @@ def connect_topstep():
     if not login.get("success"):
         raise Exception(f"Login failed: {login}")
 
-    token = login["token"]
-
     validate = requests.post(
         f"{BASE_URL}/api/Auth/validate",
-        headers={"Authorization": f"Bearer {token}"}
+        headers={"Authorization": f"Bearer {login['token']}"}
     ).json()
 
     if not validate.get("success"):
@@ -73,7 +86,6 @@ def connect_topstep():
         raise Exception("Target account not found")
 
     cached_account_id = match["id"]
-    logging.info(f"Connected to account: {match['name']}")
 
 # ================== ROUTES ==================
 @app.route("/", methods=["GET"])
@@ -82,7 +94,6 @@ def health():
         connect_topstep()
         return jsonify({"status": "connected", "accountId": cached_account_id})
     except Exception as e:
-        logging.error(str(e))
         return jsonify({"error": str(e)}), 500
 
 
@@ -91,7 +102,6 @@ def webhook():
     global cached_token, cached_account_id
 
     try:
-        # ---------- Ensure connection ----------
         if not cached_token or not cached_account_id:
             connect_topstep()
 
@@ -104,7 +114,7 @@ def webhook():
 
         symbol = normalize_symbol(raw_symbol)
         if not symbol:
-            return jsonify({"error": f"Unsupported symbol: {raw_symbol}"}), 400
+            return jsonify({"error": "Unsupported symbol"}), 400
 
         contract_id = SYMBOL_MAP[symbol]
 
@@ -117,7 +127,15 @@ def webhook():
 
         action = action_map.get(action_raw)
         if not action:
-            return jsonify({"error": f"Invalid action: {action_raw}"}), 400
+            return jsonify({"error": "Invalid action"}), 400
+
+        # ===== TELEGRAM: SIGNAL RECEIVED =====
+        send_telegram(
+            f"📩 SIGNAL RECEIVED\n"
+            f"Symbol: {symbol}\n"
+            f"Action: {action.upper()}\n"
+            f"Qty: {qty}"
+        )
 
         # ---------- CLOSE ----------
         if action == "close":
@@ -139,6 +157,7 @@ def webhook():
             active = [o for o in orders if o["contractId"] == contract_id and o["status"] in [1, 2]]
 
             if not active:
+                send_telegram("ℹ️ Already flat")
                 return jsonify({"status": "already_flat"}), 200
 
             last = active[-1]
@@ -151,8 +170,8 @@ def webhook():
                 return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if action == "buy" else 1
 
-        # ================== FIX: REAL UNIQUE customTag ==================
-        unique_tag = (
+        # ===== UNIQUE customTag =====
+        custom_tag = (
             f"{action}_"
             f"{int(datetime.datetime.utcnow().timestamp() * 1000)}_"
             f"{uuid.uuid4().hex[:6]}"
@@ -161,13 +180,17 @@ def webhook():
         payload = {
             "accountId": cached_account_id,
             "contractId": contract_id,
-            "type": 2,  # Market
+            "type": 2,
             "side": side_code,
             "size": qty,
-            "customTag": unique_tag
+            "customTag": custom_tag
         }
 
-        logging.info(f"Placing order payload: {payload}")
+        send_telegram(
+            f"🚀 ORDER SENDING\n"
+            f"{symbol} {action.upper()} x{qty}\n"
+            f"Tag: {custom_tag}"
+        )
 
         r = requests.post(
             f"{BASE_URL}/api/Order/place",
@@ -175,16 +198,27 @@ def webhook():
             json=payload
         )
 
-        logging.info(f"TopstepX response: {r.status_code} {r.text}")
-
         result = r.json()
+
         if result.get("success"):
+            send_telegram(
+                f"✅ ORDER SUCCESS\n"
+                f"{symbol} {action.upper()} x{qty}\n"
+                f"OrderID: {result.get('orderId')}"
+            )
             return jsonify({"status": "success", "orderId": result.get("orderId")})
+
         else:
+            send_telegram(
+                f"❌ ORDER FAILED\n"
+                f"{symbol} {action.upper()} x{qty}\n"
+                f"Error: {result}"
+            )
             return jsonify({"status": "error", "details": result}), 400
 
     except Exception as e:
         logging.exception("Webhook error")
+        send_telegram(f"🔥 SYSTEM ERROR\n{str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
