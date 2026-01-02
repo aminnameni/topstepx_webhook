@@ -3,6 +3,7 @@ import requests
 import os
 import datetime
 import logging
+import time
 import uuid
 
 # ================== APP ==================
@@ -75,15 +76,12 @@ def connect_topstep():
     ).json()
 
     if not login.get("success"):
-        raise Exception(f"Login failed: {login}")
+        raise Exception("Login failed")
 
     validate = requests.post(
         f"{BASE_URL}/api/Auth/validate",
         headers={"Authorization": f"Bearer {login['token']}"}
     ).json()
-
-    if not validate.get("success"):
-        raise Exception("Token validation failed")
 
     cached_token = validate["newToken"]
 
@@ -124,6 +122,7 @@ def tradingview_webhook():
         raw_symbol = str(data.get("symbol", ""))
         action_raw = str(data.get("data", "")).lower()
         qty = int(float(data.get("quantity", 0)))
+        planned_entry = float(data.get("entry_price", 0))
 
         symbol = normalize_symbol(raw_symbol)
         if not symbol:
@@ -140,11 +139,7 @@ def tradingview_webhook():
         if not action:
             return jsonify({"error": "Invalid action"}), 400
 
-        tg_send(
-            TG_CHAT_ID,
-            f"📩 SIGNAL RECEIVED\nSymbol: {symbol}\nAction: {action.upper()}\nQty: {qty}"
-        )
-
+        # ---- CLOSE POSITION ----
         if action == "close":
             now = datetime.datetime.utcnow()
             resp = requests.post(
@@ -152,8 +147,8 @@ def tradingview_webhook():
                 headers={"Authorization": f"Bearer {cached_token}"},
                 json={
                     "accountId": cached_account_id,
-                    "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat()+"Z",
-                    "endTimestamp": now.isoformat()+"Z"
+                    "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat() + "Z",
+                    "endTimestamp": now.isoformat() + "Z"
                 }
             ).json()
 
@@ -165,26 +160,20 @@ def tradingview_webhook():
             last = orders[-1]
             qty = int(last["size"])
             side_code = 1 if last["side"] == 0 else 0
+
+        # ---- OPEN POSITION ----
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
             side_code = 0 if action == "buy" else 1
 
-        custom_tag = f"{action}_{int(datetime.datetime.utcnow().timestamp()*1000)}_{uuid.uuid4().hex[:6]}"
-
         payload = {
             "accountId": cached_account_id,
             "contractId": SYMBOL_MAP[symbol],
-            "type": 2,
+            "type": 2,   # MARKET
             "side": side_code,
-            "size": qty,
-            "customTag": custom_tag
+            "size": qty
         }
-
-        tg_send(
-            TG_CHAT_ID,
-            f"🚀 ORDER SENDING\n{symbol} {action.upper()} x{qty}\nTag: {custom_tag}"
-        )
 
         r = requests.post(
             f"{BASE_URL}/api/Order/place",
@@ -192,15 +181,48 @@ def tradingview_webhook():
             json=payload
         ).json()
 
-        if r.get("success"):
-            tg_send(
-                TG_CHAT_ID,
-                f"✅ ORDER SUCCESS\n{symbol} {action.upper()} x{qty}\nOrderID: {r.get('orderId')}"
-            )
-            return jsonify({"status": "success"})
+        if not r.get("success"):
+            tg_send(TG_CHAT_ID, f"❌ ORDER FAILED\n{r}")
+            return jsonify(r), 400
 
-        tg_send(TG_CHAT_ID, f"❌ ORDER FAILED\n{r}")
-        return jsonify(r), 400
+        # ===== WAIT FOR BROKER FILL (CORRECT API) =====
+        fill_price = None
+        for _ in range(3):
+            time.sleep(0.7)
+            now = datetime.datetime.utcnow()
+            resp = requests.post(
+                f"{BASE_URL}/api/Order/search",
+                headers={"Authorization": f"Bearer {cached_token}"},
+                json={
+                    "accountId": cached_account_id,
+                    "startTimestamp": (now - datetime.timedelta(seconds=5)).isoformat() + "Z",
+                    "endTimestamp": now.isoformat() + "Z"
+                }
+            ).json()
+
+            orders = resp.get("orders", [])
+            if orders:
+                last = orders[-1]
+                if last.get("fillVolume", 0) > 0:
+                    fill_price = last.get("filledPrice")
+                    break
+
+        slippage = None
+        if fill_price:
+            slippage = round(fill_price - planned_entry, 4)
+
+        tg_send(
+            TG_CHAT_ID,
+            f"✅ ORDER EXECUTED\n"
+            f"Symbol: {symbol}\n"
+            f"Side: {action.upper()}\n"
+            f"Qty: {qty}\n\n"
+            f"Planned Entry: {planned_entry}\n"
+            f"Broker Fill: {fill_price}\n"
+            f"Slippage: {slippage}"
+        )
+
+        return jsonify({"status": "success"})
 
     except Exception as e:
         logging.exception("Webhook error")
@@ -227,32 +249,16 @@ def telegram_webhook():
         tg_menu(chat_id)
 
     elif text == "💰 Balance":
-        try:
-            accs = requests.post(
-                f"{BASE_URL}/api/Account/search",
-                headers={"Authorization": f"Bearer {cached_token}"},
-                json={"onlyActiveAccounts": True}
-            ).json()["accounts"]
+        accs = requests.post(
+            f"{BASE_URL}/api/Account/search",
+            headers={"Authorization": f"Bearer {cached_token}"},
+            json={"onlyActiveAccounts": True}
+        ).json()["accounts"]
 
-            acc = next(a for a in accs if a["id"] == cached_account_id)
+        acc = next(a for a in accs if a["id"] == cached_account_id)
+        balance = acc.get("balance", "N/A")
 
-            balance = acc.get("balance", "N/A")
-            cash = acc.get("cashBalance", "N/A")
-            open_pnl = acc.get("openProfitLoss", 0)
-            day_pnl = acc.get("dayProfitLoss", "N/A")
-
-            equity = cash + open_pnl if isinstance(cash, (int, float)) else "N/A"
-
-            tg_send(
-                chat_id,
-                f"💰 Account Balance\n"
-                f"Balance: {balance}\n"
-                f"Cash: {cash}\n"
-                f"Equity: {equity}\n"
-                f"Day PnL: {day_pnl}"
-            )
-        except Exception as e:
-            tg_send(chat_id, f"❌ Balance error\n{str(e)}")
+        tg_send(chat_id, f"💰 ACCOUNT BALANCE\nBalance: {balance}")
 
     elif text == "📊 Positions":
         now = datetime.datetime.utcnow()
@@ -261,20 +267,19 @@ def telegram_webhook():
             headers={"Authorization": f"Bearer {cached_token}"},
             json={
                 "accountId": cached_account_id,
-                "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat()+"Z",
-                "endTimestamp": now.isoformat()+"Z"
+                "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat() + "Z",
+                "endTimestamp": now.isoformat() + "Z"
             }
         ).json()
 
         orders = resp.get("orders", [])
-
         if not orders:
             tg_send(chat_id, "📭 No open positions")
         else:
-            msg_txt = "📊 Orders / Positions:\n"
+            txt = "📊 Orders / Positions:\n"
             for o in orders:
-                msg_txt += f"- {o['contractId']} | Qty: {o['size']} | Status: {o['status']}\n"
-            tg_send(chat_id, msg_txt)
+                txt += f"- {o['contractId']} | Qty: {o['size']} | Status: {o['status']}\n"
+            tg_send(chat_id, txt)
 
     elif text == "🟢 Status":
         tg_send(
