@@ -4,7 +4,6 @@ import os
 import datetime
 import logging
 import time
-import uuid
 
 # ================== APP ==================
 app = Flask(__name__)
@@ -51,7 +50,8 @@ def tg_menu(chat_id):
         "🎛️ Trading Control Panel",
         {
             "keyboard": [
-                ["💰 Balance", "📊 Positions"],
+                ["💰 Balance"],
+                ["📊 Open Orders", "📈 Trade History"],
                 ["🟢 Status"]
             ],
             "resize_keyboard": True
@@ -128,49 +128,15 @@ def tradingview_webhook():
         if not symbol:
             return jsonify({"error": "Unsupported symbol"}), 400
 
-        action_map = {
-            "buy": "buy",
-            "sell": "sell",
-            "close": "close",
-            "exit": "close"
-        }
-
-        action = action_map.get(action_raw)
-        if not action:
+        if action_raw not in ["buy", "sell"]:
             return jsonify({"error": "Invalid action"}), 400
 
-        # ---- CLOSE POSITION ----
-        if action == "close":
-            now = datetime.datetime.utcnow()
-            resp = requests.post(
-                f"{BASE_URL}/api/Order/search",
-                headers={"Authorization": f"Bearer {cached_token}"},
-                json={
-                    "accountId": cached_account_id,
-                    "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat() + "Z",
-                    "endTimestamp": now.isoformat() + "Z"
-                }
-            ).json()
-
-            orders = resp.get("orders", [])
-            if not orders:
-                tg_send(TG_CHAT_ID, "ℹ️ Already flat")
-                return jsonify({"status": "already_flat"}), 200
-
-            last = orders[-1]
-            qty = int(last["size"])
-            side_code = 1 if last["side"] == 0 else 0
-
-        # ---- OPEN POSITION ----
-        else:
-            if qty <= 0:
-                return jsonify({"error": "Invalid quantity"}), 400
-            side_code = 0 if action == "buy" else 1
+        side_code = 0 if action_raw == "buy" else 1
 
         payload = {
             "accountId": cached_account_id,
             "contractId": SYMBOL_MAP[symbol],
-            "type": 2,   # MARKET
+            "type": 2,
             "side": side_code,
             "size": qty
         }
@@ -185,7 +151,7 @@ def tradingview_webhook():
             tg_send(TG_CHAT_ID, f"❌ ORDER FAILED\n{r}")
             return jsonify(r), 400
 
-        # ===== WAIT FOR BROKER FILL (CORRECT API) =====
+        # ===== WAIT FOR BROKER FILL =====
         fill_price = None
         for _ in range(3):
             time.sleep(0.7)
@@ -215,7 +181,7 @@ def tradingview_webhook():
             TG_CHAT_ID,
             f"✅ ORDER EXECUTED\n"
             f"Symbol: {symbol}\n"
-            f"Side: {action.upper()}\n"
+            f"Side: {action_raw.upper()}\n"
             f"Qty: {qty}\n\n"
             f"Planned Entry: {planned_entry}\n"
             f"Broker Fill: {fill_price}\n"
@@ -257,29 +223,57 @@ def telegram_webhook():
 
         acc = next(a for a in accs if a["id"] == cached_account_id)
         balance = acc.get("balance", "N/A")
-
         tg_send(chat_id, f"💰 ACCOUNT BALANCE\nBalance: {balance}")
 
-    elif text == "📊 Positions":
+    elif text == "📊 Open Orders":
+        resp = requests.post(
+            f"{BASE_URL}/api/Order/searchOpen",
+            headers={"Authorization": f"Bearer {cached_token}"},
+            json={"accountId": cached_account_id}
+        ).json()
+
+        orders = resp.get("orders", [])
+        if not orders:
+            tg_send(chat_id, "📊 Open Orders\nNo open orders")
+        else:
+            msg_txt = "📊 Open Orders:\n"
+            for o in orders:
+                side = "BUY" if o.get("side") == 0 else "SELL"
+                msg_txt += (
+                    f"- {o['contractId']} | {side} | "
+                    f"Qty: {o['size']} | "
+                    f"Limit: {o.get('limitPrice')} | "
+                    f"Stop: {o.get('stopPrice')}\n"
+                )
+            tg_send(chat_id, msg_txt)
+
+    elif text == "📈 Trade History":
         now = datetime.datetime.utcnow()
         resp = requests.post(
             f"{BASE_URL}/api/Order/search",
             headers={"Authorization": f"Bearer {cached_token}"},
             json={
                 "accountId": cached_account_id,
-                "startTimestamp": (now - datetime.timedelta(hours=12)).isoformat() + "Z",
+                "startTimestamp": (now - datetime.timedelta(hours=24)).isoformat() + "Z",
                 "endTimestamp": now.isoformat() + "Z"
             }
         ).json()
 
         orders = resp.get("orders", [])
         if not orders:
-            tg_send(chat_id, "📭 No open positions")
+            tg_send(chat_id, "📈 Trade History\nNo trades found")
         else:
-            txt = "📊 Orders / Positions:\n"
+            msg_txt = "📈 Trade History (24h):\n"
             for o in orders:
-                txt += f"- {o['contractId']} | Qty: {o['size']} | Status: {o['status']}\n"
-            tg_send(chat_id, txt)
+                if o.get("fillVolume", 0) > 0:
+                    side = "BUY" if o.get("side") == 0 else "SELL"
+                    msg_txt += (
+                        f"- {o['contractId']} | {side} | "
+                        f"Qty: {o['size']} | "
+                        f"Fill: {o.get('filledPrice')} | "
+                        f"Time: {o.get('updateTimestamp')}\n"
+                    )
+            tg_send(chat_id, msg_txt)
 
     elif text == "🟢 Status":
         tg_send(
