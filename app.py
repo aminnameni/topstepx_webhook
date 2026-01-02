@@ -16,7 +16,7 @@ NY_TZ = ZoneInfo("America/New_York")
 def utc_now():
     return datetime.datetime.utcnow()
 
-def to_ny(dt: datetime.datetime):
+def to_ny(dt):
     if not dt:
         return None
     return dt.replace(tzinfo=datetime.timezone.utc).astimezone(NY_TZ)
@@ -98,7 +98,7 @@ def tg_send(chat_id, text, keyboard=None):
 def tg_menu(chat_id):
     tg_send(
         chat_id,
-        "🎛️ Trading Control Panel",
+        "🎛️ Trading Control Panel v2.0",
         {
             "keyboard": [
                 ["💰 Balance", "🟢 Status"],
@@ -229,7 +229,22 @@ def tradingview_webhook():
             "planned_entry": planned_entry,
         }
 
-        side_code = 0 if action == "buy" else 1
+        # CLOSE handling (unchanged)
+        if action == "close":
+            now = utc_now()
+            resp = search_orders_window(now - datetime.timedelta(hours=12), now)
+            orders = resp.get("orders", [])
+            if not orders:
+                tg_send(TG_CHAT_ID, "ℹ️ Already flat")
+                return jsonify({"status": "already_flat"}), 200
+
+            last = orders[-1]
+            qty = int(last.get("size", 0) or 0)
+            side_code = 1 if last.get("side") == 0 else 0
+        else:
+            if qty <= 0:
+                return jsonify({"error": "Invalid quantity"}), 400
+            side_code = 0 if action == "buy" else 1
 
         payload = {
             "accountId": cached_account_id,
@@ -258,7 +273,7 @@ def tradingview_webhook():
             orders = resp.get("orders", [])
             if orders:
                 last = orders[-1]
-                if last.get("filledPrice") is not None:
+                if last.get("fillVolume", 0) and last.get("filledPrice") is not None:
                     fill_price = last.get("filledPrice")
                     break
 
@@ -281,8 +296,8 @@ def tradingview_webhook():
             f"Side: {action.upper()}\n"
             f"Qty: {qty}\n"
             f"Time: {fmt_time_ny(LAST_EXEC_UTC)} NY\n\n"
-            f"Planned: {planned_entry}\n"
-            f"Fill: {fill_price}\n"
+            f"Planned Entry: {planned_entry}\n"
+            f"Broker Fill: {fill_price}\n"
             f"Slippage: {slippage}"
         )
 
@@ -310,9 +325,62 @@ def telegram_webhook():
     if text in ["/menu", "🔄 Refresh Menu"]:
         tg_menu(chat_id)
 
+    elif text == "💰 Balance":
+        accs = requests.post(
+            f"{BASE_URL}/api/Account/search",
+            headers=ts_headers(),
+            json={"onlyActiveAccounts": True},
+            timeout=20
+        ).json().get("accounts", [])
+        acc = next(a for a in accs if a["id"] == cached_account_id)
+        tg_send(chat_id, f"💰 ACCOUNT BALANCE\nBalance: {acc.get('balance')}")
+
+    elif text == "🟢 Status":
+        tg_send(
+            chat_id,
+            "🟢 SYSTEM STATUS\n"
+            f"Started: {fmt_time_ny(SERVER_START_UTC)} NY"
+        )
+
+    elif text == "📊 Open Orders":
+        resp = search_open_orders()
+        orders = resp.get("orders", [])
+        if not orders:
+            tg_send(chat_id, "📊 Open Orders\nNo open orders")
+        else:
+            msg_txt = "📊 Open Orders:\n"
+            for o in orders:
+                side = "BUY" if o.get("side") == 0 else "SELL"
+                msg_txt += (
+                    f"- ID:{o.get('id')} | {o.get('contractId')} | {side} | "
+                    f"Qty:{o.get('size')} | Limit:{o.get('limitPrice')} | Stop:{o.get('stopPrice')}\n"
+                )
+            tg_send(chat_id, msg_txt)
+
+    elif text == "📈 Trade History":
+        now = utc_now()
+        resp = search_orders_window(now - datetime.timedelta(hours=24), now)
+        orders = resp.get("orders", [])
+        if not orders:
+            tg_send(chat_id, "📈 Trade History\nNo trades found")
+        else:
+            msg_txt = "📈 Trade History (24h):\n"
+            for o in orders:
+                if o.get("fillVolume", 0) and o.get("filledPrice") is not None:
+                    ts = datetime.datetime.fromisoformat(
+                        o.get("updateTimestamp").replace("Z", "")
+                    )
+                    side = "BUY" if o.get("side") == 0 else "SELL"
+                    msg_txt += (
+                        f"- {o.get('contractId')} | {side} | "
+                        f"Qty:{o.get('size')} | Fill:{o.get('filledPrice')} | "
+                        f"Time:{fmt_time_ny(ts)} NY\n"
+                    )
+            tg_send(chat_id, msg_txt)
+
     elif text == "📌 Last Trade":
         if not LAST_EXEC:
-            tg_send(chat_id, "📌 Last Trade\nNo trades yet")
+            tg_send(chat_id, "📌 Last Trade\nNo executions recorded yet")
         else:
             tg_send(
                 chat_id,
@@ -324,13 +392,46 @@ def telegram_webhook():
                 f"Fill: {LAST_EXEC['fill_price']}"
             )
 
+    elif text == "💥 Last Slippage":
+        if not LAST_EXEC:
+            tg_send(chat_id, "💥 Last Slippage\nNo executions recorded yet")
+        else:
+            tg_send(
+                chat_id,
+                "💥 Last Slippage\n"
+                f"Time: {fmt_time_ny(LAST_EXEC_UTC)} NY\n"
+                f"Planned: {LAST_EXEC['planned_entry']}\n"
+                f"Fill: {LAST_EXEC['fill_price']}\n"
+                f"Slippage: {LAST_EXEC['slippage']}"
+            )
+
+    elif text == "📊 Today Stats":
+        start_utc = ny_today_start_utc()
+        now = utc_now()
+        resp = search_orders_window(start_utc, now)
+        orders = resp.get("orders", [])
+
+        filled = [
+            o for o in orders
+            if o.get("fillVolume", 0) and o.get("filledPrice") is not None
+        ]
+
+        tg_send(
+            chat_id,
+            "📊 Today Stats (NY)\n"
+            f"Filled Trades: {len(filled)}\n"
+            f"Window Start: {fmt_time_ny(start_utc)} NY\n"
+            f"Now: {fmt_time_ny(now)} NY"
+        )
+
     elif text == "⏱️ Uptime / Last Signal":
         uptime = utc_now() - SERVER_START_UTC
         h = uptime.seconds // 3600
         m = (uptime.seconds % 3600) // 60
 
-        signal_txt = "No signals yet"
-        if LAST_SIGNAL:
+        if not LAST_SIGNAL:
+            signal_txt = "No signals yet"
+        else:
             signal_txt = (
                 f"{LAST_SIGNAL['symbol']} {LAST_SIGNAL['action'].upper()} x{LAST_SIGNAL['qty']}\n"
                 f"Entry: {LAST_SIGNAL['planned_entry']}\n"
@@ -344,6 +445,33 @@ def telegram_webhook():
             f"Started: {fmt_time_ny(SERVER_START_UTC)} NY\n\n"
             f"{signal_txt}"
         )
+
+    elif text == "🚫 Cancel ALL Open Orders":
+        resp = search_open_orders()
+        orders = resp.get("orders", [])
+        if not orders:
+            tg_send(chat_id, "🚫 Cancel ALL Open Orders\nNo open orders")
+        else:
+            ok = 0
+            fail = 0
+            for o in orders:
+                oid = o.get("id")
+                if oid is None:
+                    fail += 1
+                    continue
+                cr = cancel_order(int(oid))
+                if cr.get("success"):
+                    ok += 1
+                else:
+                    fail += 1
+
+            tg_send(
+                chat_id,
+                "🚫 Cancel ALL Open Orders\n"
+                f"Requested: {len(orders)}\n"
+                f"Cancelled OK: {ok}\n"
+                f"Failed: {fail}"
+            )
 
     else:
         tg_send(chat_id, "❓ Unknown command\n/menu")
