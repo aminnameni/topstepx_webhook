@@ -664,6 +664,7 @@ def telegram_webhook():
         tg_send(chat_id, "❓ Unknown command\n/menu")
 
     return "ok"
+    
 
 # ================== RUN ==================
 if __name__ == "__main__":
