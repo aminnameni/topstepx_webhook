@@ -51,6 +51,19 @@ def ny_today_start_utc():
     )
     return ny_start.astimezone(datetime.timezone.utc)
 
+def parse_ts(ts: str):
+    # Topstep timestamps usually like "2026-01-02T15:04:05.123Z"
+    if not ts:
+        return None
+    try:
+        s = ts.strip()
+        if s.endswith("Z"):
+            s = s[:-1]
+        # fromisoformat supports microseconds if present
+        return datetime.datetime.fromisoformat(s)
+    except Exception:
+        return None
+
 # ================== ENV ==================
 USERNAME = os.getenv("TOPSTEP_USER")
 API_KEY = os.getenv("TOPSTEP_KEY")
@@ -70,14 +83,30 @@ SYMBOL_MAP = {
     "MNQ": "CON.F.US.MNQ.H26",
 }
 
-# ================== RUNTIME STATE ==================
+# $ per 1.0 point (not tick)
+POINT_VALUE = {
+    "MNQ": 2.0,   # Micro Nasdaq: $2 per point
+    "MGC": 10.0,  # Micro Gold: $10 per point
+}
+
+def contract_to_symbol(contract_id: str):
+    if not contract_id:
+        return ""
+    c = str(contract_id).upper()
+    if ".MNQ." in c or c.endswith(".MNQ") or "MNQ" in c:
+        return "MNQ"
+    if ".MGC." in c or c.endswith(".MGC") or "MGC" in c:
+        return "MGC"
+    return ""
+
+# ================== RUNTIME STATE (Telegram utilities) ==================
 SERVER_START_UTC = utc_now()
 
 LAST_SIGNAL_UTC = None
-LAST_SIGNAL = None
+LAST_SIGNAL = None  # dict
 
 LAST_EXEC_UTC = None
-LAST_EXEC = None
+LAST_EXEC = None    # dict
 
 # ================== TELEGRAM ==================
 def tg_send(chat_id, text, keyboard=None):
@@ -161,7 +190,7 @@ def connect_topstep():
 def ts_headers():
     return {"Authorization": f"Bearer {cached_token}"}
 
-def search_orders_window(start_utc, end_utc):
+def search_orders_window(start_utc: datetime.datetime, end_utc: datetime.datetime):
     return requests.post(
         f"{BASE_URL}/api/Order/search",
         headers=ts_headers(),
@@ -221,15 +250,17 @@ def tradingview_webhook():
         if not action:
             return jsonify({"error": "Invalid action"}), 400
 
+        # ذخیره آخرین سیگنال
         LAST_SIGNAL_UTC = utc_now()
         LAST_SIGNAL = {
             "symbol": symbol,
             "action": action,
             "qty": qty,
             "planned_entry": planned_entry,
+            "raw": data
         }
 
-        # CLOSE handling (unchanged)
+        # ---- CLOSE ----
         if action == "close":
             now = utc_now()
             resp = search_orders_window(now - datetime.timedelta(hours=12), now)
@@ -240,7 +271,7 @@ def tradingview_webhook():
 
             last = orders[-1]
             qty = int(last.get("size", 0) or 0)
-            side_code = 1 if last.get("side") == 0 else 0
+            side_code = 1 if last.get("side") == 0 else 0  # reverse
         else:
             if qty <= 0:
                 return jsonify({"error": "Invalid quantity"}), 400
@@ -249,7 +280,7 @@ def tradingview_webhook():
         payload = {
             "accountId": cached_account_id,
             "contractId": SYMBOL_MAP[symbol],
-            "type": 2,
+            "type": 2,  # MARKET
             "side": side_code,
             "size": qty
         }
@@ -265,6 +296,7 @@ def tradingview_webhook():
             tg_send(TG_CHAT_ID, f"❌ ORDER FAILED\n{r}")
             return jsonify(r), 400
 
+        # ===== WAIT FOR BROKER FILL (filledPrice) =====
         fill_price = None
         for _ in range(3):
             time.sleep(0.7)
@@ -277,8 +309,11 @@ def tradingview_webhook():
                     fill_price = last.get("filledPrice")
                     break
 
-        slippage = round(fill_price - planned_entry, 4) if fill_price else None
+        slippage = None
+        if fill_price is not None:
+            slippage = round(fill_price - planned_entry, 4)
 
+        # ذخیره آخرین اجرا
         LAST_EXEC_UTC = utc_now()
         LAST_EXEC = {
             "symbol": symbol,
@@ -291,7 +326,7 @@ def tradingview_webhook():
 
         tg_send(
             TG_CHAT_ID,
-            "✅ ORDER EXECUTED\n"
+            f"✅ ORDER EXECUTED\n"
             f"Symbol: {symbol}\n"
             f"Side: {action.upper()}\n"
             f"Qty: {qty}\n"
@@ -311,6 +346,8 @@ def tradingview_webhook():
 # ================== TELEGRAM WEBHOOK ==================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
+    global cached_token, cached_account_id
+
     if not cached_token or not cached_account_id:
         connect_topstep()
 
@@ -332,13 +369,17 @@ def telegram_webhook():
             json={"onlyActiveAccounts": True},
             timeout=20
         ).json().get("accounts", [])
+
         acc = next(a for a in accs if a["id"] == cached_account_id)
-        tg_send(chat_id, f"💰 ACCOUNT BALANCE\nBalance: {acc.get('balance')}")
+        balance = acc.get("balance", "N/A")
+        tg_send(chat_id, f"💰 ACCOUNT BALANCE\nBalance: {balance}")
 
     elif text == "🟢 Status":
         tg_send(
             chat_id,
-            "🟢 SYSTEM STATUS\n"
+            f"🟢 SYSTEM STATUS\n"
+            f"Token: {'OK' if cached_token else '❌'}\n"
+            f"AccountID: {cached_account_id}\n"
             f"Started: {fmt_time_ny(SERVER_START_UTC)} NY"
         )
 
@@ -367,10 +408,8 @@ def telegram_webhook():
             msg_txt = "📈 Trade History (24h):\n"
             for o in orders:
                 if o.get("fillVolume", 0) and o.get("filledPrice") is not None:
-                    ts = datetime.datetime.fromisoformat(
-                        o.get("updateTimestamp").replace("Z", "")
-                    )
                     side = "BUY" if o.get("side") == 0 else "SELL"
+                    ts = parse_ts(o.get("updateTimestamp", ""))
                     msg_txt += (
                         f"- {o.get('contractId')} | {side} | "
                         f"Qty:{o.get('size')} | Fill:{o.get('filledPrice')} | "
@@ -386,10 +425,10 @@ def telegram_webhook():
                 chat_id,
                 "📌 Last Trade\n"
                 f"Time: {fmt_time_ny(LAST_EXEC_UTC)} NY\n"
-                f"Symbol: {LAST_EXEC['symbol']}\n"
-                f"Side: {LAST_EXEC['side']}\n"
-                f"Qty: {LAST_EXEC['qty']}\n"
-                f"Fill: {LAST_EXEC['fill_price']}"
+                f"Symbol: {LAST_EXEC.get('symbol')}\n"
+                f"Side: {LAST_EXEC.get('side')}\n"
+                f"Qty: {LAST_EXEC.get('qty')}\n"
+                f"Fill: {LAST_EXEC.get('fill_price')}"
             )
 
     elif text == "💥 Last Slippage":
@@ -400,12 +439,17 @@ def telegram_webhook():
                 chat_id,
                 "💥 Last Slippage\n"
                 f"Time: {fmt_time_ny(LAST_EXEC_UTC)} NY\n"
-                f"Planned: {LAST_EXEC['planned_entry']}\n"
-                f"Fill: {LAST_EXEC['fill_price']}\n"
-                f"Slippage: {LAST_EXEC['slippage']}"
+                f"Symbol: {LAST_EXEC.get('symbol')}\n"
+                f"Planned: {LAST_EXEC.get('planned_entry')}\n"
+                f"Fill: {LAST_EXEC.get('fill_price')}\n"
+                f"Slippage: {LAST_EXEC.get('slippage')}"
             )
 
     elif text == "📊 Today Stats":
+        # ---------------------------
+        # Realized PnL for NY day
+        # (supports scale-in / partial closes by maintaining avg price & position)
+        # ---------------------------
         start_utc = ny_today_start_utc()
         now = utc_now()
         resp = search_orders_window(start_utc, now)
@@ -416,41 +460,184 @@ def telegram_webhook():
             if o.get("fillVolume", 0) and o.get("filledPrice") is not None
         ]
 
-        tg_send(
-            chat_id,
-            "📊 Today Stats (NY)\n"
-            f"Filled Trades: {len(filled)}\n"
-            f"Window Start: {fmt_time_ny(start_utc)} NY\n"
-            f"Now: {fmt_time_ny(now)} NY"
-        )
+        if not filled:
+            tg_send(chat_id, "📊 Today Stats (NY)\nNo filled trades")
+            return "ok"
+
+        # sort by timestamp
+        def _key(o):
+            dt = parse_ts(o.get("updateTimestamp", "")) or datetime.datetime.min
+            return dt
+        filled.sort(key=_key)
+
+        # position state per symbol
+        # pos_qty: signed int (long +, short -)
+        # avg_price: float
+        state = {
+            "MNQ": {"pos_qty": 0, "avg_price": 0.0},
+            "MGC": {"pos_qty": 0, "avg_price": 0.0},
+        }
+
+        realized_events = []  # list of dict: symbol, time_dt, action, qty, entry, exit, pnl
+
+        total_pnl = 0.0
+
+        for o in filled:
+            contract_id = o.get("contractId", "")
+            sym = contract_to_symbol(contract_id)
+            if sym not in state:
+                continue
+
+            pv = POINT_VALUE.get(sym)
+            if not pv:
+                continue
+
+            side = o.get("side")  # 0 buy, 1 sell
+            qty = int(o.get("size", 0) or 0)
+            price = float(o.get("filledPrice"))
+            tdt = parse_ts(o.get("updateTimestamp", ""))
+
+            if qty <= 0:
+                continue
+
+            st = state[sym]
+            pos_qty = int(st["pos_qty"])
+            avg = float(st["avg_price"])
+
+            if side == 0:
+                # BUY
+                if pos_qty >= 0:
+                    # increase / open long (scale-in)
+                    new_qty = pos_qty + qty
+                    if new_qty != 0:
+                        avg = (avg * pos_qty + price * qty) / new_qty if pos_qty != 0 else price
+                    pos_qty = new_qty
+                    st["pos_qty"], st["avg_price"] = pos_qty, avg
+                else:
+                    # buy to cover short (realize pnl on closed portion)
+                    close_qty = min(qty, abs(pos_qty))
+                    pnl = (avg - price) * pv * close_qty  # short profit if price down
+                    total_pnl += pnl
+                    realized_events.append({
+                        "symbol": sym,
+                        "time_dt": tdt,
+                        "action": "COVER",
+                        "qty": close_qty,
+                        "entry": avg,
+                        "exit": price,
+                        "pnl": pnl,
+                    })
+                    pos_qty = pos_qty + close_qty  # pos_qty is negative
+                    remaining_buy = qty - close_qty
+                    if remaining_buy > 0:
+                        # flips to long with remaining
+                        pos_qty = remaining_buy
+                        avg = price
+                    # if still short, avg unchanged
+                    st["pos_qty"], st["avg_price"] = pos_qty, avg if pos_qty != 0 else 0.0
+
+            else:
+                # SELL
+                if pos_qty <= 0:
+                    # increase / open short
+                    new_qty_abs = abs(pos_qty) + qty
+                    if new_qty_abs != 0:
+                        # avg for short kept as avg entry price
+                        avg = (avg * abs(pos_qty) + price * qty) / new_qty_abs if pos_qty != 0 else price
+                    pos_qty = -(new_qty_abs)
+                    st["pos_qty"], st["avg_price"] = pos_qty, avg
+                else:
+                    # sell to close long
+                    close_qty = min(qty, pos_qty)
+                    pnl = (price - avg) * pv * close_qty  # long profit if price up
+                    total_pnl += pnl
+                    realized_events.append({
+                        "symbol": sym,
+                        "time_dt": tdt,
+                        "action": "SELL",
+                        "qty": close_qty,
+                        "entry": avg,
+                        "exit": price,
+                        "pnl": pnl,
+                    })
+                    pos_qty = pos_qty - close_qty
+                    remaining_sell = qty - close_qty
+                    if remaining_sell > 0:
+                        # flips to short with remaining
+                        pos_qty = -remaining_sell
+                        avg = price
+                    st["pos_qty"], st["avg_price"] = pos_qty, avg if pos_qty != 0 else 0.0
+
+        # Build message
+        lines = []
+        lines.append("📊 Today Stats (NY)")
+        lines.append(f"Window: {fmt_time_ny(start_utc)} → {fmt_time_ny(now)} NY")
+        lines.append(f"Filled Orders: {len(filled)}")
+        lines.append("")
+
+        if not realized_events:
+            lines.append("No realized PnL yet (open position only).")
+        else:
+            # limit spam: show up to last 12 realized events
+            max_rows = 12
+            shown = realized_events[-max_rows:]
+            for i, ev in enumerate(shown, 1):
+                sign = "+" if ev["pnl"] >= 0 else "-"
+                pnl_abs = abs(ev["pnl"])
+                tstr = fmt_time_ny(ev["time_dt"])
+                lines.append(
+                    f"{i}) {ev['symbol']} {ev['action']} x{ev['qty']} @ {tstr}  "
+                    f"Entry:{round(ev['entry'], 4)} Exit:{round(ev['exit'], 4)}  "
+                    f"PNL:{sign}${pnl_abs:,.2f}"
+                )
+
+            if len(realized_events) > max_rows:
+                lines.append(f"... ({len(realized_events) - max_rows} more)")
+
+        lines.append("")
+        sign_total = "+" if total_pnl >= 0 else "-"
+        lines.append(f"💰 Total Realized PnL: {sign_total}${abs(total_pnl):,.2f}")
+
+        # show open positions (if any)
+        open_bits = []
+        for sym, st in state.items():
+            if st["pos_qty"] != 0:
+                side_txt = "LONG" if st["pos_qty"] > 0 else "SHORT"
+                open_bits.append(f"{sym} {side_txt} x{abs(st['pos_qty'])} avg:{round(st['avg_price'], 4)}")
+        if open_bits:
+            lines.append("Open Position(s): " + " | ".join(open_bits))
+
+        tg_send(chat_id, "\n".join(lines))
 
     elif text == "⏱️ Uptime / Last Signal":
         uptime = utc_now() - SERVER_START_UTC
-        h = uptime.seconds // 3600
-        m = (uptime.seconds % 3600) // 60
+        uptime_s = int(uptime.total_seconds())
+        uptime_h = uptime_s // 3600
+        uptime_m = (uptime_s % 3600) // 60
 
         if not LAST_SIGNAL:
             signal_txt = "No signals yet"
         else:
             signal_txt = (
-                f"{LAST_SIGNAL['symbol']} {LAST_SIGNAL['action'].upper()} x{LAST_SIGNAL['qty']}\n"
-                f"Entry: {LAST_SIGNAL['planned_entry']}\n"
-                f"Time: {fmt_time_ny(LAST_SIGNAL_UTC)} NY"
+                f"{LAST_SIGNAL.get('symbol')} {LAST_SIGNAL.get('action', '').upper()} x{LAST_SIGNAL.get('qty')}\n"
+                f"Planned Entry: {LAST_SIGNAL.get('planned_entry')}\n"
+                f"Time: {fmt_time_ny(LAST_SIGNAL_UTC)} NY ({fmt_ago(LAST_SIGNAL_UTC)})"
             )
 
         tg_send(
             chat_id,
             "⏱️ Uptime / Last Signal\n"
-            f"Uptime: {h}h {m}m\n"
+            f"Uptime: {uptime_h}h {uptime_m}m\n"
             f"Started: {fmt_time_ny(SERVER_START_UTC)} NY\n\n"
-            f"{signal_txt}"
+            f"Last Signal:\n{signal_txt}"
         )
 
     elif text == "🚫 Cancel ALL Open Orders":
         resp = search_open_orders()
         orders = resp.get("orders", [])
+
         if not orders:
-            tg_send(chat_id, "🚫 Cancel ALL Open Orders\nNo open orders")
+            tg_send(chat_id, "🚫 Cancel ALL Open Orders\nNo open orders to cancel")
         else:
             ok = 0
             fail = 0
