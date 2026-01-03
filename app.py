@@ -445,169 +445,103 @@ def telegram_webhook():
                 f"Slippage: {LAST_EXEC.get('slippage')}"
             )
 
-    elif text == "📊 Today Stats":
-        # ---------------------------
-        # Realized PnL for NY day
-        # (supports scale-in / partial closes by maintaining avg price & position)
-        # ---------------------------
-        start_utc = ny_today_start_utc()
-        now = utc_now()
-        resp = search_orders_window(start_utc, now)
-        orders = resp.get("orders", [])
+elif text == "📊 Today Stats":
+    start_utc = ny_today_start_utc()
+    now = utc_now()
 
-        filled = [
-            o for o in orders
-            if o.get("fillVolume", 0) and o.get("filledPrice") is not None
-        ]
+    resp = search_orders_window(start_utc, now)
+    orders = resp.get("orders", [])
 
-        if not filled:
-            tg_send(chat_id, "📊 Today Stats (NY)\nNo filled trades")
-            return "ok"
+    filled = [
+        o for o in orders
+        if o.get("fillVolume", 0) and o.get("filledPrice") is not None
+    ]
 
-        # sort by timestamp
-        def _key(o):
-            dt = parse_ts(o.get("updateTimestamp", "")) or datetime.datetime.min
-            return dt
-        filled.sort(key=_key)
+    if not filled:
+        tg_send(chat_id, "📊 Today Stats (NY)\nNo filled trades")
+        return "ok"
 
-        # position state per symbol
-        # pos_qty: signed int (long +, short -)
-        # avg_price: float
-        state = {
-            "MNQ": {"pos_qty": 0, "avg_price": 0.0},
-            "MGC": {"pos_qty": 0, "avg_price": 0.0},
-        }
+    # sort by execution time
+    filled.sort(key=lambda o: parse_ts(o.get("updateTimestamp")) or datetime.datetime.min)
 
-        realized_events = []  # list of dict: symbol, time_dt, action, qty, entry, exit, pnl
+    state = {}  # symbol -> {pos_qty, avg_price}
+    realized = []
+    total_pnl = 0.0
 
-        total_pnl = 0.0
+    for o in filled:
+        symbol = contract_to_symbol(o.get("contractId"))
+        if symbol not in POINT_VALUE:
+            continue
 
-        for o in filled:
-            contract_id = o.get("contractId", "")
-            sym = contract_to_symbol(contract_id)
-            if sym not in state:
-                continue
+        pv = POINT_VALUE[symbol]
+        side = o.get("side")  # 0 buy, 1 sell
+        qty = int(o.get("size", 0))
+        price = float(o.get("filledPrice"))
+        ts = parse_ts(o.get("updateTimestamp"))
 
-            pv = POINT_VALUE.get(sym)
-            if not pv:
-                continue
+        if qty <= 0:
+            continue
 
-            side = o.get("side")  # 0 buy, 1 sell
-            qty = int(o.get("size", 0) or 0)
-            price = float(o.get("filledPrice"))
-            tdt = parse_ts(o.get("updateTimestamp", ""))
+        if symbol not in state:
+            state[symbol] = {"pos_qty": 0, "avg_price": 0.0}
 
-            if qty <= 0:
-                continue
+        pos = state[symbol]["pos_qty"]
+        avg = state[symbol]["avg_price"]
 
-            st = state[sym]
-            pos_qty = int(st["pos_qty"])
-            avg = float(st["avg_price"])
-
-            if side == 0:
-                # BUY
-                if pos_qty >= 0:
-                    # increase / open long (scale-in)
-                    new_qty = pos_qty + qty
-                    if new_qty != 0:
-                        avg = (avg * pos_qty + price * qty) / new_qty if pos_qty != 0 else price
-                    pos_qty = new_qty
-                    st["pos_qty"], st["avg_price"] = pos_qty, avg
-                else:
-                    # buy to cover short (realize pnl on closed portion)
-                    close_qty = min(qty, abs(pos_qty))
-                    pnl = (avg - price) * pv * close_qty  # short profit if price down
-                    total_pnl += pnl
-                    realized_events.append({
-                        "symbol": sym,
-                        "time_dt": tdt,
-                        "action": "COVER",
-                        "qty": close_qty,
-                        "entry": avg,
-                        "exit": price,
-                        "pnl": pnl,
-                    })
-                    pos_qty = pos_qty + close_qty  # pos_qty is negative
-                    remaining_buy = qty - close_qty
-                    if remaining_buy > 0:
-                        # flips to long with remaining
-                        pos_qty = remaining_buy
-                        avg = price
-                    # if still short, avg unchanged
-                    st["pos_qty"], st["avg_price"] = pos_qty, avg if pos_qty != 0 else 0.0
-
+        if side == 0:  # BUY
+            if pos >= 0:
+                new_qty = pos + qty
+                avg = (avg * pos + price * qty) / new_qty if pos != 0 else price
+                pos = new_qty
             else:
-                # SELL
-                if pos_qty <= 0:
-                    # increase / open short
-                    new_qty_abs = abs(pos_qty) + qty
-                    if new_qty_abs != 0:
-                        # avg for short kept as avg entry price
-                        avg = (avg * abs(pos_qty) + price * qty) / new_qty_abs if pos_qty != 0 else price
-                    pos_qty = -(new_qty_abs)
-                    st["pos_qty"], st["avg_price"] = pos_qty, avg
-                else:
-                    # sell to close long
-                    close_qty = min(qty, pos_qty)
-                    pnl = (price - avg) * pv * close_qty  # long profit if price up
-                    total_pnl += pnl
-                    realized_events.append({
-                        "symbol": sym,
-                        "time_dt": tdt,
-                        "action": "SELL",
-                        "qty": close_qty,
-                        "entry": avg,
-                        "exit": price,
-                        "pnl": pnl,
-                    })
-                    pos_qty = pos_qty - close_qty
-                    remaining_sell = qty - close_qty
-                    if remaining_sell > 0:
-                        # flips to short with remaining
-                        pos_qty = -remaining_sell
-                        avg = price
-                    st["pos_qty"], st["avg_price"] = pos_qty, avg if pos_qty != 0 else 0.0
+                close_qty = min(qty, abs(pos))
+                pnl = (avg - price) * pv * close_qty
+                total_pnl += pnl
+                realized.append((symbol, ts, close_qty, avg, price, pnl))
+                pos += close_qty
+                if qty > close_qty:
+                    pos = qty - close_qty
+                    avg = price
 
-        # Build message
-        lines = []
-        lines.append("📊 Today Stats (NY)")
-        lines.append(f"Window: {fmt_time_ny(start_utc)} → {fmt_time_ny(now)} NY")
-        lines.append(f"Filled Orders: {len(filled)}")
-        lines.append("")
+        else:  # SELL
+            if pos <= 0:
+                new_qty = abs(pos) + qty
+                avg = (avg * abs(pos) + price * qty) / new_qty if pos != 0 else price
+                pos = -new_qty
+            else:
+                close_qty = min(qty, pos)
+                pnl = (price - avg) * pv * close_qty
+                total_pnl += pnl
+                realized.append((symbol, ts, close_qty, avg, price, pnl))
+                pos -= close_qty
+                if qty > close_qty:
+                    pos = -(qty - close_qty)
+                    avg = price
 
-        if not realized_events:
-            lines.append("No realized PnL yet (open position only).")
-        else:
-            # limit spam: show up to last 12 realized events
-            max_rows = 12
-            shown = realized_events[-max_rows:]
-            for i, ev in enumerate(shown, 1):
-                sign = "+" if ev["pnl"] >= 0 else "-"
-                pnl_abs = abs(ev["pnl"])
-                tstr = fmt_time_ny(ev["time_dt"])
-                lines.append(
-                    f"{i}) {ev['symbol']} {ev['action']} x{ev['qty']} @ {tstr}  "
-                    f"Entry:{round(ev['entry'], 4)} Exit:{round(ev['exit'], 4)}  "
-                    f"PNL:{sign}${pnl_abs:,.2f}"
-                )
+        state[symbol]["pos_qty"] = pos
+        state[symbol]["avg_price"] = avg if pos != 0 else 0.0
 
-            if len(realized_events) > max_rows:
-                lines.append(f"... ({len(realized_events) - max_rows} more)")
+    lines = []
+    lines.append("📊 Today Stats (NY)")
+    lines.append(f"Window: {fmt_time_ny(start_utc)} → {fmt_time_ny(now)} NY")
+    lines.append("")
 
-        lines.append("")
-        sign_total = "+" if total_pnl >= 0 else "-"
-        lines.append(f"💰 Total Realized PnL: {sign_total}${abs(total_pnl):,.2f}")
+    if not realized:
+        lines.append("No realized PnL yet.")
+    else:
+        for i, (sym, ts, qty, entry, exitp, pnl) in enumerate(realized, 1):
+            sign = "+" if pnl >= 0 else "-"
+            lines.append(
+                f"{i}) {sym} x{qty} {fmt_time_ny(ts)}  "
+                f"Entry:{entry} Exit:{exitp}  "
+                f"PNL:{sign}${abs(pnl):.2f}"
+            )
 
-        # show open positions (if any)
-        open_bits = []
-        for sym, st in state.items():
-            if st["pos_qty"] != 0:
-                side_txt = "LONG" if st["pos_qty"] > 0 else "SHORT"
-                open_bits.append(f"{sym} {side_txt} x{abs(st['pos_qty'])} avg:{round(st['avg_price'], 4)}")
-        if open_bits:
-            lines.append("Open Position(s): " + " | ".join(open_bits))
+    lines.append("")
+    sign_total = "+" if total_pnl >= 0 else "-"
+    lines.append(f"💰 Total PnL: {sign_total}${abs(total_pnl):.2f}")
 
-        tg_send(chat_id, "\n".join(lines))
+    tg_send(chat_id, "\n".join(lines))
 
     elif text == "⏱️ Uptime / Last Signal":
         uptime = utc_now() - SERVER_START_UTC
